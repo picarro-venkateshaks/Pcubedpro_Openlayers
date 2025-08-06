@@ -1,0 +1,176 @@
+.App {
+  text-align: center;
+  height: 100vh;
+  width: 100vw;
+  position: relative;
+}
+
+.map-container {
+  width: 100%;
+  height: 100%;
+}
+
+/* Additional styling for better UI */
+.ol-zoom {
+  top: 10px;
+  left: 10px;
+}
+
+.ol-zoom-slider {
+  top: 80px;
+  left: 10px;
+}
+
+.ol-scale-line {
+  bottom: 10px;
+  left: 10px;
+}
+
+/* Responsive design */
+@media (max-width: 768px) {
+  .basemap-gallery,
+  .layer-controls {
+    font-size: 12px;
+    padding: 8px;
+  }
+  
+  .basemap-gallery button {
+    padding: 4px 8px;
+    font-size: 11px;
+  }
+} 
+
+/* Modern Popup Styles */
+.ol-popup.modern-popup {
+  position: absolute;
+  background: #fff;
+  border-radius: 10px;
+  border: 1px solid #888;
+  min-width: 260px;
+  max-width: 400px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.18);
+  z-index: 1000;
+  pointer-events: auto;
+  transform: translate(-50%, -100%);
+  padding: 0;
+  display: block;
+}
+.ol-popup.modern-popup.hidden {
+  display: none;
+}
+.popup-titlebar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: #f5f5f7;
+  border-bottom: 1px solid #e0e0e0;
+  border-radius: 10px 10px 0 0;
+  padding: 10px 16px 8px 16px;
+}
+.popup-title {
+  font-weight: 600;
+  font-size: 1.1em;
+  color: #333;
+}
+.popup-close {
+  background: none;
+  border: none;
+  font-size: 1.3em;
+  color: #888;
+  cursor: pointer;
+  font-weight: bold;
+  line-height: 1;
+  padding: 0 4px;
+}
+.popup-content {
+  max-height: 260px;
+  overflow-y: auto;
+  padding: 12px 16px 16px 16px;
+}
+.popup-pointer {
+  position: absolute;
+  left: 50%;
+  bottom: -14px;
+  width: 0;
+  height: 0;
+  border-left: 14px solid transparent;
+  border-right: 14px solid transparent;
+  border-top: 14px solid #fff;
+  filter: drop-shadow(0 2px 2px rgba(0,0,0,0.10));
+  pointer-events: none;
+  transform: translateX(-50%);
+}
+
+/* Table styling for popup */
+.ol-popup table {
+  border-collapse: collapse;
+  width: 100%;
+  margin-top: 8px;
+  font-size: 0.97em;
+}
+.ol-popup th, .ol-popup td {
+  border: 1px solid #e0e0e0;
+  padding: 4px 8px;
+  text-align: left;
+}
+.ol-popup th {
+  background: #f5f5f7;
+  font-weight: 600;
+}
+.ol-popup tr:nth-child(even) td {
+  background: #fafbfc;
+}
+
+/* Panel styles for controls */
+.styled-panel {
+  background: rgba(255,255,255,0.95);
+  border-radius: 10px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.07);
+  padding: 16px 18px 12px 18px;
+  margin: 18px 0 0 18px;
+  display: inline-block;
+}
+.basemap-gallery.styled-panel {
+  position: absolute;
+  right: 18px;
+  bottom: 18px;
+  left: auto;
+  top: auto;
+  margin: 0;
+  z-index: 1001;
+}
+.layer-controls.styled-panel {
+  position: absolute;
+  top: 18px;
+  right: 18px;
+  margin: 0;
+}
+.basemap-gallery button {
+  margin: 4px 0;
+  padding: 7px 16px;
+  border-radius: 6px;
+  border: 1px solid #d0d0d0;
+  background: #f5f5f7;
+  color: #333;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.basemap-gallery button.active {
+  background: #1976d2;
+  color: #fff;
+  border-color: #1976d2;
+}
+.layer-controls label {
+  display: flex;
+  align-items: center;
+  margin-bottom: 8px;
+  font-size: 1em;
+  cursor: pointer;
+}
+.layer-controls input[type="checkbox"] {
+  margin-right: 8px;
+  accent-color: #1976d2;
+  width: 18px;
+  height: 18px;
+} 

@@ -1,0 +1,130 @@
+@import 'ol/ol.css';
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+code {
+  font-family: source-code-pro, Menlo, Monaco, Consolas, 'Courier New',
+    monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+.map-container {
+  position: relative;
+  width: 100%;
+  height: 100vh;
+}
+
+.ol-control {
+  position: absolute;
+  background-color: rgba(255, 255, 255, 0.9);
+  border-radius: 4px;
+  padding: 2px;
+}
+
+.ol-control button {
+  display: block;
+  margin: 1px;
+  padding: 0;
+  color: white;
+  font-size: 1.14em;
+  font-weight: bold;
+  text-decoration: none;
+  text-align: center;
+  height: 1.375em;
+  width: 1.375em;
+  line-height: 0.4em;
+  background-color: rgba(0, 60, 136, 0.5);
+  border: none;
+  border-radius: 2px;
+}
+
+.ol-control button:hover {
+  background-color: rgba(0, 60, 136, 0.7);
+}
+
+.ol-scale-line {
+  position: absolute;
+  bottom: 8px;
+  left: 8px;
+  background: rgba(0, 60, 136, 0.3);
+  color: white;
+  padding: 2px 5px;
+  border-radius: 4px;
+  font-size: 12px;
+}
+
+.layer-controls {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  background: rgba(255, 255, 255, 0.9);
+  padding: 10px;
+  border-radius: 4px;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  z-index: 1000;
+}
+
+.layer-controls h3 {
+  margin: 0 0 10px 0;
+  font-size: 14px;
+  color: #333;
+}
+
+.layer-controls label {
+  display: block;
+  margin: 5px 0;
+  font-size: 12px;
+  color: #666;
+}
+
+.layer-controls input[type="checkbox"] {
+  margin-right: 5px;
+}
+
+.basemap-gallery {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  background: rgba(255, 255, 255, 0.9);
+  padding: 10px;
+  border-radius: 4px;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  z-index: 1000;
+}
+
+.basemap-gallery h3 {
+  margin: 0 0 10px 0;
+  font-size: 14px;
+  color: #333;
+}
+
+.basemap-gallery button {
+  display: block;
+  width: 100%;
+  margin: 2px 0;
+  padding: 5px 10px;
+  background: #007cba;
+  color: white;
+  border: none;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.basemap-gallery button:hover {
+  background: #005a87;
+}
+
+.basemap-gallery button.active {
+  background: #28a745;
+} 
