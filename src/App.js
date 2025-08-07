@@ -23,7 +23,7 @@ function App() {
   const [drawingLayer, setDrawingLayer] = useState(null);
   const [drawingInteraction, setDrawingInteraction] = useState(null);
   const [filteredFeatures, setFilteredFeatures] = useState([]);
-  const [isFeatureTableCollapsed, setIsFeatureTableCollapsed] = useState(false); // Show by default
+  const [isFeatureTableCollapsed, setIsFeatureTableCollapsed] = useState(false);
   const [isQuerying, setIsQuerying] = useState(false);
   const [queryResult, setQueryResult] = useState(null);
   const [selectedLayer, setSelectedLayer] = useState('Picarro:Boundary');
@@ -34,15 +34,13 @@ function App() {
   const [performanceMetrics, setPerformanceMetrics] = useState({});
   const [activeTab, setActiveTab] = useState('Picarro:Boundary');
   const [layerResults, setLayerResults] = useState({});
+  const [availableLayers, setAvailableLayers] = useState([]);
+  const [apiConnectionStatus, setApiConnectionStatus] = useState('checking');
 
   const RECORDS_PER_PAGE = 10;
 
-  // Available layers for filtering
-  const availableLayers = [
-    { id: 'Picarro:Boundary', name: 'Boundary', visible: true },
-    { id: 'Picarro:OtherLayer', name: 'Other Layer', visible: false },
-    // Add more layers here as needed
-  ];
+  // API Base URL
+  const API_BASE_URL = 'http://localhost:5000/api';
 
   // Initialize map
   useEffect(() => {
@@ -111,7 +109,7 @@ function App() {
 
     // Set up click handler for GetFeatureInfo
     mapInstance.on('singleclick', (evt) => {
-      if (isDrawing) return; // Don't show popup when drawing
+      if (isDrawing) return;
 
       const viewResolution = mapInstance.getView().getResolution();
       const url = reportAreaLayer.getSource().getFeatureInfoUrl(
@@ -133,8 +131,6 @@ function App() {
                 content += `<strong>${key}:</strong> ${value}<br>`;
               }
               content += '</div>';
-              
-              // Show popup (you can implement a popup component)
               console.log('Feature info:', content);
             }
           })
@@ -151,6 +147,90 @@ function App() {
         mapInstance.setTarget(undefined);
       }
     };
+  }, []);
+
+  // Load available layers from backend and load all records by default
+  useEffect(() => {
+    const loadLayers = async () => {
+      try {
+        const response = await fetch(`${API_BASE_URL}/layers`);
+        if (response.ok) {
+          const data = await response.json();
+          setAvailableLayers(data.layers || []);
+          if (data.layers && data.layers.length > 0) {
+            setSelectedLayer(data.layers[0].id);
+            setActiveTab(data.layers[0].id);
+            // Load all records for the first layer by default
+            loadAllRecords(data.layers[0].id);
+          }
+        } else {
+          console.error('Failed to load layers from backend');
+          // Fallback to default layers
+          const defaultLayers = [
+            { id: 'Picarro:Boundary', name: 'Boundary', visible: true },
+            { id: 'Picarro:OtherLayer', name: 'Other Layer', visible: false }
+          ];
+          setAvailableLayers(defaultLayers);
+          loadAllRecords(defaultLayers[0].id);
+        }
+      } catch (error) {
+        console.error('Error loading layers:', error);
+        // Fallback to default layers
+        const defaultLayers = [
+          { id: 'Picarro:Boundary', name: 'Boundary', visible: true },
+          { id: 'Picarro:OtherLayer', name: 'Other Layer', visible: false }
+        ];
+        setAvailableLayers(defaultLayers);
+        loadAllRecords(defaultLayers[0].id);
+      }
+    };
+
+    loadLayers();
+  }, []);
+
+  // Function to load all records for a layer
+  const loadAllRecords = async (layerId) => {
+    try {
+      const response = await fetch(`${API_BASE_URL}/features?layer=${layerId}`);
+      if (response.ok) {
+        const data = await response.json();
+        if (data.features) {
+          setFilteredFeatures(data.features);
+          setLayerResults({
+            [layerId]: {
+              success: true,
+              features: data.features,
+              count: data.features.length,
+              layerName: availableLayers.find(l => l.id === layerId)?.name || layerId
+            }
+          });
+          setIsFeatureTableCollapsed(false);
+        }
+      } else {
+        console.error('Failed to load all records for layer:', layerId);
+      }
+    } catch (error) {
+      console.error('Error loading all records:', error);
+    }
+  };
+
+  // Test API connection
+  useEffect(() => {
+    const testConnection = async () => {
+      try {
+        const response = await fetch(`${API_BASE_URL.replace('/api', '')}/test-connection`);
+        if (response.ok) {
+          setApiConnectionStatus('connected');
+        } else {
+          setApiConnectionStatus('failed');
+        }
+      } catch (error) {
+        console.error('API connection test failed:', error);
+        setApiConnectionStatus('failed');
+      }
+    };
+
+    testConnection();
   }, []);
 
   // Change basemap
@@ -185,10 +265,8 @@ function App() {
   const startDrawing = () => {
     if (!map || !drawingSource) return;
 
-    // Clear previous drawings
     drawingSource.clear();
 
-    // Create draw interaction
     const drawInteraction = new Draw({
       source: drawingSource,
       type: 'Polygon'
@@ -198,13 +276,9 @@ function App() {
       const geometry = event.feature.getGeometry();
       const extent = geometry.getExtent();
       
-      // Convert extent to bbox string
       const bbox = extent.join(',');
-      
-      // Perform spatial query
       performSpatialQuery(bbox, geometry);
       
-      // Remove drawing interaction
       map.removeInteraction(drawInteraction);
       setIsDrawing(false);
       setDrawingInteraction(null);
@@ -236,7 +310,6 @@ function App() {
     setCurrentPage(1);
     setLayerResults({});
     
-    // Restore original Report Area layer
     if (map && originalReportAreaSource) {
       const layers = map.getLayers();
       layers.forEach(layer => {
@@ -249,7 +322,7 @@ function App() {
     }
   };
 
-  // Perform spatial query
+  // Perform spatial query using backend API
   const performSpatialQuery = async (bbox, geometry) => {
     const startTime = performance.now();
     setIsQuerying(true);
@@ -301,103 +374,64 @@ function App() {
         }
       });
 
-      // Query all available layers
-      const layerQueryPromises = availableLayers.map(async (layer) => {
-        const layerStartTime = performance.now();
-        
-        try {
-          const wfsUrl = 'http://20.20.152.180:8181/geoserver/Picarro/wfs';
-          const wfsParams = new URLSearchParams({
-            service: 'WFS',
-            version: '1.0.0',
-            request: 'GetFeature',
-            typeName: layer.id,
-            outputFormat: 'application/json',
-            maxFeatures: '1000',
-            CQL_FILTER: `INTERSECTS(the_geom, ${wkt})`
-          });
-
-          const fullUrl = `${wfsUrl}?${wfsParams.toString()}`;
-          console.log(`Querying layer ${layer.id}:`, fullUrl);
-
-          const response = await fetch(fullUrl);
-          const layerEndTime = performance.now();
-          
-          if (response.ok) {
-            const geoJson = await response.json();
-            const features = geoJson.features || [];
-            
-            return {
-              layerId: layer.id,
-              layerName: layer.name,
-              features: features,
-              loadTime: layerEndTime - layerStartTime,
-              success: true
-            };
-          } else {
-            return {
-              layerId: layer.id,
-              layerName: layer.name,
-              features: [],
-              loadTime: layerEndTime - layerStartTime,
-              success: false,
-              error: `HTTP ${response.status}`
-            };
-          }
-        } catch (error) {
-          const layerEndTime = performance.now();
-          return {
-            layerId: layer.id,
-            layerName: layer.name,
-            features: [],
-            loadTime: layerEndTime - layerStartTime,
-            success: false,
-            error: error.message
-          };
-        }
-      });
-
-      const layerResults = await Promise.all(layerQueryPromises);
-      const totalEndTime = performance.now();
+      // Query all available layers using backend API
+      const layerIds = availableLayers.map(layer => layer.id);
       
-      // Store results for each layer
-      const resultsMap = {};
-      layerResults.forEach(result => {
-        resultsMap[result.layerId] = result;
+      const response = await fetch(`${API_BASE_URL}/spatial-query`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          geometry: wkt,
+          layers: layerIds
+        })
       });
-      setLayerResults(resultsMap);
 
-      // Set active layer results
-      const activeResult = resultsMap[selectedLayer];
-      if (activeResult && activeResult.success) {
-        setFilteredFeatures(activeResult.features);
-        setIsFeatureTableCollapsed(false);
-        
-        setQueryResult({
-          type: 'success',
-          message: `Found ${activeResult.features.length} features in the selected area`,
-          bbox: bbox
-        });
-      } else {
-        setQueryResult({
-          type: 'error',
-          message: activeResult?.error || 'Failed to fetch filtered features'
-        });
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
       }
 
-      // Update performance metrics
-      setPerformanceMetrics({
-        totalTime: totalEndTime - startTime,
-        layerResults: resultsMap,
-        queryTime: new Date().toLocaleTimeString()
-      });
+      const data = await response.json();
+      const totalEndTime = performance.now();
+      
+      if (data.success) {
+        setLayerResults(data.results);
+        
+        // Set active layer results
+        const activeResult = data.results[selectedLayer];
+        if (activeResult && activeResult.success) {
+          setFilteredFeatures(activeResult.features);
+          setIsFeatureTableCollapsed(false);
+          
+          setQueryResult({
+            type: 'success',
+            message: `Found ${activeResult.features.length} features in the selected area`,
+            bbox: bbox
+          });
+        } else {
+          setQueryResult({
+            type: 'error',
+            message: activeResult?.error || 'Failed to fetch filtered features'
+          });
+        }
 
-      // Zoom to the drawn area
-      const extent = geometry.getExtent();
-      map.getView().fit(extent, {
-        padding: [20, 20, 20, 20],
-        duration: 1000
-      });
+        // Update performance metrics
+        setPerformanceMetrics({
+          totalTime: data.totalTime,
+          layerResults: data.results,
+          queryTime: data.queryTime
+        });
+
+        // Zoom to the drawn area
+        const extent = geometry.getExtent();
+        map.getView().fit(extent, {
+          padding: [20, 20, 20, 20],
+          duration: 1000
+        });
+      } else {
+        throw new Error(data.error || 'Spatial query failed');
+      }
     } catch (error) {
       console.error('Spatial query error:', error);
       setQueryResult({
@@ -420,7 +454,7 @@ function App() {
 
   // Zoom to selected features
   const zoomToSelectedFeatures = (e) => {
-    e.stopPropagation(); // Prevent table collapse
+    e.stopPropagation();
     if (selectedFeatures.length === 0) return;
 
     const selectedFeaturesData = filteredFeatures.filter(feature => 
@@ -428,12 +462,11 @@ function App() {
     );
 
     if (selectedFeaturesData.length > 0) {
-      // Create a simple extent from the selected features
       const coordinates = selectedFeaturesData.map(feature => {
         if (feature.geometry && feature.geometry.coordinates) {
-          return feature.geometry.coordinates[0]; // First coordinate of polygon
+          return feature.geometry.coordinates[0];
         }
-        return [0, 0]; // Fallback
+        return [0, 0];
       }).flat();
 
       if (coordinates.length > 0) {
@@ -444,7 +477,6 @@ function App() {
 
         const extent = [minX, minY, maxX, maxY];
         
-        // Transform coordinates to map projection if needed
         const mapProjection = map.getView().getProjection();
         const transformedExtent = [
           transform([minX, minY], 'EPSG:4326', mapProjection),
@@ -484,12 +516,20 @@ function App() {
     <div className="App">
       <div ref={mapRef} className="map-container" />
 
+      {/* API Connection Status */}
+      <div className="api-status styled-panel">
+        <div className={`status-indicator ${apiConnectionStatus}`}>
+          API: {apiConnectionStatus === 'connected' ? '✅ Connected' : 
+                 apiConnectionStatus === 'failed' ? '❌ Failed' : '⏳ Checking...'}
+        </div>
+      </div>
+
       {/* Performance Metrics */}
       <div className="performance-metrics styled-panel">
         <h3>Performance Metrics</h3>
         {performanceMetrics.queryTime && (
           <div className="metric-item">
-            <strong>Last Query:</strong> {performanceMetrics.queryTime}
+            <strong>Last Query:</strong> {new Date(performanceMetrics.queryTime).toLocaleTimeString()}
           </div>
         )}
         {performanceMetrics.totalTime && (
@@ -502,7 +542,7 @@ function App() {
           return (
             <div key={layerId} className="metric-item">
               <strong>{result.layerName}:</strong> {result.success ? 
-                `${result.features.length} features (${result.loadTime.toFixed(2)}ms)` : 
+                `${result.count} features (${result.loadTime.toFixed(2)}ms)` : 
                 `Failed (${result.loadTime.toFixed(2)}ms)`
               }
             </div>
@@ -510,7 +550,7 @@ function App() {
         })}
       </div>
 
-      {/* Base Map Gallery - Bottom Right */}
+      {/* Base Map Gallery - Top Right */}
       <div className="basemap-gallery styled-panel">
         <h3>Base Maps</h3>
         <button
@@ -546,7 +586,7 @@ function App() {
         </label>
       </div>
 
-      {/* Spatial Query Panel - Bottom Left (with dynamic positioning) */}
+      {/* Spatial Query Panel - Bottom Left */}
       <div className={`spatial-query-panel styled-panel ${!isFeatureTableCollapsed ? 'with-table' : ''}`}>
         <div className="panel-header">
           <h3>Spatial Query</h3>
@@ -620,134 +660,134 @@ function App() {
 
       {/* Feature Table */}
       <div className={`feature-table-container ${isFeatureTableCollapsed ? 'collapsed' : ''}`}>
-          <div className="feature-table-header">
-            <div className="table-tabs">
-              {Object.keys(layerResults).length > 0 ? (
-                Object.keys(layerResults).map(layerId => {
-                  const result = layerResults[layerId];
-                  const layer = availableLayers.find(l => l.id === layerId);
-                  return (
-                    <button
-                      key={layerId}
-                      className={`tab-button ${activeTab === layerId ? 'active' : ''}`}
-                      onClick={() => handleTabChange(layerId)}
-                      disabled={!result.success}
-                    >
-                      {layer?.name || layerId} ({result.features.length})
-                    </button>
-                  );
-                })
-              ) : (
-                <div style={{ color: '#666', fontSize: '12px' }}>
-                  No query results yet
-                </div>
-              )}
-            </div>
-            <div className="table-controls">
-              {selectedFeatures.length > 0 && (
-                <button 
-                  className="zoom-btn"
-                  onClick={zoomToSelectedFeatures}
-                  title="Zoom to selected features"
-                >
-                  🔍 Zoom to Selected ({selectedFeatures.length})
-                </button>
-              )}
-              <button
-                className="collapse-btn"
-                onClick={() => setIsFeatureTableCollapsed(!isFeatureTableCollapsed)}
-              >
-                {isFeatureTableCollapsed ? '▼' : '▲'}
-              </button>
-            </div>
+        <div className="feature-table-header">
+          <div className="table-tabs">
+            {Object.keys(layerResults).length > 0 ? (
+              Object.keys(layerResults).map(layerId => {
+                const result = layerResults[layerId];
+                const layer = availableLayers.find(l => l.id === layerId);
+                return (
+                  <button
+                    key={layerId}
+                    className={`tab-button ${activeTab === layerId ? 'active' : ''}`}
+                    onClick={() => handleTabChange(layerId)}
+                    disabled={!result.success}
+                  >
+                    {layer?.name || layerId} ({result.count || 0})
+                  </button>
+                );
+              })
+            ) : (
+              <div style={{ color: '#666', fontSize: '12px' }}>
+                No query results yet
+              </div>
+            )}
           </div>
-          
-          {/* Table Expand Arrow - Bottom Center */}
-          <button
-            className={`table-expand-arrow ${isFeatureTableCollapsed ? 'collapsed' : ''}`}
-            onClick={() => setIsFeatureTableCollapsed(!isFeatureTableCollapsed)}
-            title={isFeatureTableCollapsed ? 'Expand table' : 'Collapse table'}
-          >
-          </button>
-          
-          {!isFeatureTableCollapsed && filteredFeatures.length > 0 && (
-            <>
-              <div className="feature-table-content">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>
+          <div className="table-controls">
+            {selectedFeatures.length > 0 && (
+              <button 
+                className="zoom-btn"
+                onClick={zoomToSelectedFeatures}
+                title="Zoom to selected features"
+              >
+                🔍 Zoom to Selected ({selectedFeatures.length})
+              </button>
+            )}
+            <button
+              className="collapse-btn"
+              onClick={() => setIsFeatureTableCollapsed(!isFeatureTableCollapsed)}
+            >
+              {isFeatureTableCollapsed ? '▼' : '▲'}
+            </button>
+          </div>
+        </div>
+        
+        {/* Table Expand Arrow - Bottom Center */}
+        <button
+          className={`table-expand-arrow ${isFeatureTableCollapsed ? 'collapsed' : ''}`}
+          onClick={() => setIsFeatureTableCollapsed(!isFeatureTableCollapsed)}
+          title={isFeatureTableCollapsed ? 'Expand table' : 'Collapse table'}
+        >
+        </button>
+        
+        {!isFeatureTableCollapsed && filteredFeatures.length > 0 && (
+          <>
+            <div className="feature-table-content">
+              <table>
+                <thead>
+                  <tr>
+                    <th>
+                      <input
+                        type="checkbox"
+                        checked={selectedFeatures.length === getPaginatedFeatures().length && getPaginatedFeatures().length > 0}
+                        onChange={(e) => {
+                          if (e.target.checked) {
+                            setSelectedFeatures(getPaginatedFeatures().map(f => f.id || f.properties?.id));
+                          } else {
+                            setSelectedFeatures([]);
+                          }
+                        }}
+                      />
+                    </th>
+                    <th>Feature ID</th>
+                    {filteredFeatures.length > 0 && Object.keys(filteredFeatures[0].properties || {}).map(key => (
+                      <th key={key}>{key}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {getPaginatedFeatures().map((feature, index) => (
+                    <tr key={index}>
+                      <td>
                         <input
                           type="checkbox"
-                          checked={selectedFeatures.length === getPaginatedFeatures().length && getPaginatedFeatures().length > 0}
-                          onChange={(e) => {
-                            if (e.target.checked) {
-                              setSelectedFeatures(getPaginatedFeatures().map(f => f.id || f.properties?.id));
-                            } else {
-                              setSelectedFeatures([]);
-                            }
-                          }}
+                          checked={selectedFeatures.includes(feature.id || feature.properties?.id)}
+                          onChange={(e) => handleFeatureSelect(feature.id || feature.properties?.id, e.target.checked)}
                         />
-                      </th>
-                      <th>Feature ID</th>
-                      {filteredFeatures.length > 0 && Object.keys(filteredFeatures[0].properties || {}).map(key => (
-                        <th key={key}>{key}</th>
+                      </td>
+                      <td>{feature.id || `Feature ${index + 1}`}</td>
+                      {Object.entries(feature.properties || {}).map(([key, value]) => (
+                        <td key={key} title={String(value)}>
+                          <div className="cell-content">{String(value)}</div>
+                        </td>
                       ))}
                     </tr>
-                  </thead>
-                  <tbody>
-                    {getPaginatedFeatures().map((feature, index) => (
-                      <tr key={index}>
-                        <td>
-                          <input
-                            type="checkbox"
-                            checked={selectedFeatures.includes(feature.id || feature.properties?.id)}
-                            onChange={(e) => handleFeatureSelect(feature.id || feature.properties?.id, e.target.checked)}
-                          />
-                        </td>
-                        <td>{feature.id || `Feature ${index + 1}`}</td>
-                        {Object.entries(feature.properties || {}).map(([key, value]) => (
-                          <td key={key} title={String(value)}>
-                            <div className="cell-content">{String(value)}</div>
-                          </td>
-                        ))}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-              
-              {/* Pagination */}
-              {totalPages > 1 && (
-                <div className="pagination">
-                  <button
-                    onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
-                    disabled={currentPage === 1}
-                  >
-                    Previous
-                  </button>
-                  <span>
-                    Page {currentPage} of {totalPages}
-                  </span>
-                  <button
-                    onClick={() => setCurrentPage(prev => Math.min(totalPages, prev + 1))}
-                    disabled={currentPage === totalPages}
-                  >
-                    Next
-                  </button>
-                </div>
-              )}
-            </>
-          )}
-          
-          {!isFeatureTableCollapsed && filteredFeatures.length === 0 && (
-            <div className="feature-table-content">
-              <div style={{ padding: '20px', textAlign: 'center', color: '#666' }}>
-                No features found. Draw a box to query features.
-              </div>
+                  ))}
+                </tbody>
+              </table>
             </div>
-          )}
-        </div>
+            
+            {/* Pagination */}
+            {totalPages > 1 && (
+              <div className="pagination">
+                <button
+                  onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
+                  disabled={currentPage === 1}
+                >
+                  Previous
+                </button>
+                <span>
+                  Page {currentPage} of {totalPages}
+                </span>
+                <button
+                  onClick={() => setCurrentPage(prev => Math.min(totalPages, prev + 1))}
+                  disabled={currentPage === totalPages}
+                >
+                  Next
+                </button>
+              </div>
+            )}
+          </>
+        )}
+        
+        {!isFeatureTableCollapsed && filteredFeatures.length === 0 && (
+          <div className="feature-table-content">
+            <div style={{ padding: '20px', textAlign: 'center', color: '#666' }}>
+              No features found. Draw a box to query features.
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

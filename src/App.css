@@ -20,13 +20,48 @@
   z-index: 1000;
 }
 
-/* Performance Metrics - Top Left (moved to avoid overlap) */
+/* API Connection Status */
+.api-status {
+  top: 100px;
+  left: 10px;
+  min-width: 200px;
+  max-width: 250px;
+  z-index: 1002;
+}
+
+.status-indicator {
+  padding: 8px 12px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 500;
+  text-align: center;
+}
+
+.status-indicator.connected {
+  background: #d4edda;
+  border: 1px solid #c3e6cb;
+  color: #155724;
+}
+
+.status-indicator.failed {
+  background: #f8d7da;
+  border: 1px solid #f5c6cb;
+  color: #721c24;
+}
+
+.status-indicator.checking {
+  background: #fff3cd;
+  border: 1px solid #ffeaa7;
+  color: #856404;
+}
+
+/* Performance Metrics - Top Left (adjusted to avoid overlap) */
 .performance-metrics {
-  top: 20px;
-  left: 20px;
+  bottom: 400px;
+  left: 168vh;
   min-width: 250px;
   max-width: 300px;
-  max-height: 250px;
+  max-height: 200px;
   overflow-y: auto;
 }
 
@@ -51,7 +86,7 @@
 /* Base Map Gallery - Top Right (Fixed width) */
 .basemap-gallery {
   top: 20px;
-  right: 20px;
+  left: 168vh;
   width: 200px;
   min-width: 200px;
   max-width: 200px;
@@ -91,8 +126,8 @@
 
 /* Layers Panel - Top Right (moved down to avoid overlap) */
 .layers-panel {
-  top: 140px;
-  right: 20px;
+  bottom: 200px;
+  right: 24px;
   width: 180px;
   min-width: 180px;
   max-width: 180px;
@@ -120,7 +155,7 @@
 
 /* Spatial Query Panel - Bottom Left (with dynamic positioning) */
 .spatial-query-panel {
-  bottom: 20px;
+  bottom: 60px;
   left: 20px;
   min-width: 300px;
   max-width: 400px;
@@ -497,13 +532,13 @@
 }
 
 .table-expand-arrow.collapsed::after {
-  content: '▼';
+  content: '▲';
   color: white;
   font-weight: bold;
 }
 
 .table-expand-arrow:not(.collapsed)::after {
-  content: '▲';
+  content: '▼';
   color: white;
   font-weight: bold;
 }
