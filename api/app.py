@@ -78,7 +78,7 @@ def spatial_query():
                     # Prepare WFS request
                     wfs_params = {
                         "service": "WFS",
-                        "version": "1.0.0",  # Use 1.0.0 as it worked in queries.py
+                        "version": "1.0.0",  # Use 1.0.0 as it works better with this GeoServer
                         "request": "GetFeature",
                         "typeName": layer_id,
                         "outputFormat": "application/json",
@@ -179,7 +179,7 @@ def spatial_query_paginated():
                     # First, get total count
                     count_params = {
                         "service": "WFS",
-                        "version": "1.0.0",
+                        "version": "1.0.0",  # Use 1.0.0 as it works better with this GeoServer
                         "request": "GetFeature",
                         "typeName": layer_id,
                         "resultType": "hits",
@@ -202,27 +202,39 @@ def spatial_query_paginated():
                                 total_features = int(number_match.group(1))
                                 print(f"DEBUG: Found numberOfFeatures: {total_features}")
                             else:
-                                # Try alternative patterns
+                                # Try to find numberOfFeatures without quotes
                                 alt_match = re.search(r'numberOfFeatures=(\d+)', count_text)
                                 if alt_match:
                                     total_features = int(alt_match.group(1))
-                                    print(f"DEBUG: Found numberOfFeatures (alt): {total_features}")
+                                    print(f"DEBUG: Found numberOfFeatures (no quotes): {total_features}")
                                 else:
-                                    # Try numberMatched (WFS 2.0.0)
+                                    # Try to find numberMatched attribute (WFS 2.0.0)
                                     matched_match = re.search(r'numberMatched="(\d+)"', count_text)
                                     if matched_match:
                                         total_features = int(matched_match.group(1))
                                         print(f"DEBUG: Found numberMatched: {total_features}")
                                     else:
-                                        # Try numberReturned
-                                        returned_match = re.search(r'numberReturned="(\d+)"', count_text)
-                                        if returned_match:
-                                            total_features = int(returned_match.group(1))
-                                            print(f"DEBUG: Found numberReturned: {total_features}")
+                                        # Try to find numberMatched without quotes
+                                        matched_alt_match = re.search(r'numberMatched=(\d+)', count_text)
+                                        if matched_alt_match:
+                                            total_features = int(matched_alt_match.group(1))
+                                            print(f"DEBUG: Found numberMatched (no quotes): {total_features}")
                                         else:
-                                            print(f"DEBUG: No count found in XML response")
-                                            print(f"DEBUG: Full response: {count_text}")
-                                            total_features = 0
+                                            # Try to find numberReturned attribute
+                                            returned_match = re.search(r'numberReturned="(\d+)"', count_text)
+                                            if returned_match:
+                                                total_features = int(returned_match.group(1))
+                                                print(f"DEBUG: Found numberReturned: {total_features}")
+                                            else:
+                                                # Try to find numberReturned without quotes
+                                                returned_alt_match = re.search(r'numberReturned=(\d+)', count_text)
+                                                if returned_alt_match:
+                                                    total_features = int(returned_alt_match.group(1))
+                                                    print(f"DEBUG: Found numberReturned (no quotes): {total_features}")
+                                                else:
+                                                    print(f"DEBUG: No count found in XML response")
+                                                    print(f"DEBUG: Full response: {count_text}")
+                                                    total_features = 0
                             
                             if total_features > 0:
                                 print(f"DEBUG: Spatial query found {total_features} total features")
@@ -230,7 +242,7 @@ def spatial_query_paginated():
                                 # Now get paginated features
                                 wfs_params = {
                                     "service": "WFS",
-                                    "version": "1.0.0",
+                                    "version": "1.0.0",  # Use 1.0.0 as it works better with this GeoServer
                                     "request": "GetFeature",
                                     "typeName": layer_id,
                                     "outputFormat": "application/json",
@@ -323,20 +335,22 @@ def get_features():
         if not layer_id:
             return jsonify({"error": "Layer ID is required"}), 400
         
-        # First, get total count if requested
+        # Always get total count if we don't have it
         total_features = 0
         if get_total_count:
+            # Use a more reliable approach: get all features and count them
             count_params = {
                 "service": "WFS",
-                "version": "1.0.0",  # Use 1.0.0 as it worked in queries.py
+                "version": "1.0.0",  # Use 1.0.0 as it works better with this GeoServer
                 "request": "GetFeature",
                 "typeName": layer_id,
-                "resultType": "hits"  # Only get count, not features
+                "outputFormat": "application/json",
+                "maxFeatures": "10000"  # Get up to 10000 features to count
             }
             
             # Add spatial filter if geometry provided
             if geometry and geometry != "1=1":
-                count_params["CQL_FILTER"] = f"INTERSECTS(geom, {geometry})"  # Use 'geom' as it worked before
+                count_params["CQL_FILTER"] = f"INTERSECTS(the_geom, {geometry})"  # Use 'the_geom' as it's the correct field name
             
             print(f"DEBUG: Making count request to GeoServer with params: {count_params}")
             count_response = requests.get(WFS_URL, params=count_params, timeout=30)
@@ -344,40 +358,10 @@ def get_features():
             
             if count_response.status_code == 200:
                 try:
-                    count_text = count_response.text
-                    print(f"DEBUG: Count response text: {count_text}")
-                    
-                    # Parse XML response to extract total count
-                    # Look for numberOfFeatures attribute in FeatureCollection
-                    import re
-                    
-                    # Try to find numberOfFeatures attribute (WFS 1.1.0)
-                    number_match = re.search(r'numberOfFeatures="(\d+)"', count_text)
-                    if number_match:
-                        total_features = int(number_match.group(1))
-                        print(f"DEBUG: Found numberOfFeatures: {total_features}")
-                    else:
-                        # Try to find numberMatched attribute (WFS 2.0.0)
-                        matched_match = re.search(r'numberMatched="(\d+)"', count_text)
-                        if matched_match:
-                            total_features = int(matched_match.group(1))
-                            print(f"DEBUG: Found numberMatched: {total_features}")
-                        else:
-                            # Try to find numberReturned attribute
-                            returned_match = re.search(r'numberReturned="(\d+)"', count_text)
-                            if returned_match:
-                                total_features = int(returned_match.group(1))
-                                print(f"DEBUG: Found numberReturned: {total_features}")
-                            else:
-                                # Try alternative patterns
-                                alt_match = re.search(r'numberOfFeatures=(\d+)', count_text)
-                                if alt_match:
-                                    total_features = int(alt_match.group(1))
-                                    print(f"DEBUG: Found numberOfFeatures (alt): {total_features}")
-                                else:
-                                    print(f"DEBUG: No count found in XML response, using 0")
-                                    print(f"DEBUG: Full response: {count_text}")
-                                    total_features = 0
+                    count_data = count_response.json()
+                    features = count_data.get("features", [])
+                    total_features = len(features)
+                    print(f"DEBUG: Found {total_features} features by counting actual features")
                 except Exception as e:
                     print(f"DEBUG: Error parsing count response: {e}")
                     total_features = 0
@@ -385,31 +369,32 @@ def get_features():
                 print(f"DEBUG: Count request failed with status: {count_response.status_code}")
                 print(f"DEBUG: Count response text: {count_response.text}")
         
-        # If we don't have total_features but getTotalCount is false, 
-        # we need to get it for pagination info
-        if total_features == 0 and not get_total_count:
-            # Make a quick count request to get total features for pagination
+        # If we don't have total_features, we need to get it for pagination info
+        if total_features == 0:
+            # Make a count request to get total features for pagination
             count_params = {
                 "service": "WFS",
-                "version": "1.1.0",
+                "version": "1.0.0",  # Use 1.0.0 as it works better with this GeoServer
                 "request": "GetFeature",
                 "typeName": layer_id,
-                "resultType": "hits"
+                "outputFormat": "application/json",
+                "maxFeatures": "10000"  # Get up to 10000 features to count
             }
             
             # Add spatial filter if geometry provided
             if geometry and geometry != "1=1":
-                count_params["CQL_FILTER"] = f"INTERSECTS(the_geom, {geometry})"
+                count_params["CQL_FILTER"] = f"INTERSECTS(the_geom, {geometry})"  # Use 'the_geom' as it's the correct field name
             
             try:
                 count_response = requests.get(WFS_URL, params=count_params, timeout=10)
                 if count_response.status_code == 200:
-                    count_text = count_response.text
-                    import re
-                    number_match = re.search(r'numberOfFeatures="(\d+)"', count_text)
-                    if number_match:
-                        total_features = int(number_match.group(1))
-                        print(f"DEBUG: Got total_features for pagination: {total_features}")
+                    count_data = count_response.json()
+                    features = count_data.get("features", [])
+                    total_features = len(features)
+                    print(f"DEBUG: Got total_features for pagination: {total_features}")
+                else:
+                    print(f"DEBUG: Count request failed with status: {count_response.status_code}")
+                    total_features = 0
             except Exception as e:
                 print(f"DEBUG: Error getting total count for pagination: {e}")
                 total_features = 0
@@ -417,7 +402,7 @@ def get_features():
         # Prepare WFS request
         wfs_params = {
             "service": "WFS",
-            "version": "1.0.0",  # Use 1.0.0 as it worked in queries.py
+            "version": "1.0.0",  # Use 1.0.0 as it works better with this GeoServer
             "request": "GetFeature",
             "typeName": layer_id,
             "outputFormat": "application/json",
@@ -428,7 +413,7 @@ def get_features():
         
         # Add spatial filter if geometry provided
         if geometry and geometry != "1=1":
-            wfs_params["CQL_FILTER"] = f"INTERSECTS(geom, {geometry})"  # Use 'geom' as it worked before
+            wfs_params["CQL_FILTER"] = f"INTERSECTS(the_geom, {geometry})"  # Use 'the_geom' as it's the correct field name
         
         # Make WFS request
         print(f"DEBUG: Making WFS request with params: {wfs_params}")

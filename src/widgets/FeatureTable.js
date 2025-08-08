@@ -119,7 +119,7 @@ const FeatureTable = ({
           </div>
 
           {/* Pagination */}
-          {getTotalPages() >= 1 && (
+          {filteredFeatures.length > 0 && getTotalFeatures() > 0 && (
             <div className="pagination">
               {/* Previous Button */}
               <button

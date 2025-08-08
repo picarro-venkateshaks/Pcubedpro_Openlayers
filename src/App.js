@@ -228,21 +228,20 @@ function App() {
   const loadRecords = async (layerId, page = 1) => {
     setIsLoadingPage(true);
     try {
-      // Get total count on first page load or if we don't have pagination info
+      // Always get total count on first page load to ensure pagination works
       const currentLayerResult = layerResults[layerId];
       const hasPaginationInfo = currentLayerResult && currentLayerResult.pagination && currentLayerResult.pagination.totalFeatures;
       const getTotalCount = page === 1 || !hasPaginationInfo;
       
-      const response = await fetch(`${API_BASE_URL}/features?layer=${layerId}&page=${page}&pageSize=${RECORDS_PER_PAGE}&getTotalCount=${getTotalCount}`);
+      const response = await fetch(`${API_BASE_URL}/features?layer=${layerId}&page=${page}&pageSize=${RECORDS_PER_PAGE}&getTotalCount=true`);
       if (response.ok) {
         const data = await response.json();
         if (data.features) {
           console.log('loadRecords - received data:', data);
           setFilteredFeatures(data.features);
           
-          // Preserve existing pagination info if not provided in response
-          const existingPagination = currentLayerResult?.pagination;
-          const paginationInfo = data.pagination || existingPagination;
+          // Use pagination info from response, fallback to existing if not provided
+          const paginationInfo = data.pagination || currentLayerResult?.pagination;
           
           setLayerResults({
             [layerId]: {
@@ -363,7 +362,7 @@ function App() {
     setQueryResult(null);
     setCurrentSpatialQueryGeometry(null); // Clear stored spatial query geometry
     
-    // Reload all records for the current layer
+    // Reload all records for the current layer with total count
     if (selectedLayer) {
       loadAllRecords(selectedLayer);
     }
@@ -791,6 +790,10 @@ function App() {
       console.log('getTotalPages - totalPages:', totalPages);
       return totalPages;
     }
+    // If no pagination data but we have features, return at least 1
+    if (activeResult && activeResult.features && activeResult.features.length > 0) {
+      return 1;
+    }
     console.log('getTotalPages - no pagination data, returning 1');
     return 1;
   };
@@ -799,7 +802,11 @@ function App() {
   const getTotalFeatures = () => {
     const activeResult = layerResults[activeTab];
     if (activeResult && activeResult.pagination) {
-      return activeResult.pagination.totalFeatures || 0;
+      return activeResult.pagination.totalFeatures || activeResult.features?.length || 0;
+    }
+    // If no pagination data but we have features, return the count of features
+    if (activeResult && activeResult.features) {
+      return activeResult.features.length;
     }
     return 0;
   };
