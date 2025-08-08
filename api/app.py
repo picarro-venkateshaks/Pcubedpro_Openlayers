@@ -4,6 +4,7 @@ import requests
 import json
 import time
 from datetime import datetime
+import math as Math
 
 app = Flask(__name__)
 CORS(app)  # Enable CORS for all routes
@@ -16,7 +17,6 @@ WFS_URL = f"{GEOSERVER_BASE_URL}/{WORKSPACE}/wfs"
 # Available layers configuration
 AVAILABLE_LAYERS = [
     {"id": "Picarro:Boundary", "name": "Boundary", "visible": True},
-    {"id": "Picarro:OtherLayer", "name": "Other Layer", "visible": False},
 ]
 
 @app.route("/", methods=["GET"])
@@ -67,62 +67,232 @@ def spatial_query():
         # Query each layer
         for layer_id in layers:
             layer_start_time = time.time()
+            layer_end_time = time.time()  # Initialize at the beginning
             
-            try:
-                # Prepare WFS request
-                wfs_params = {
-                    "service": "WFS",
-                    "version": "1.1.0",  # Use 1.1.0 for consistency
-                    "request": "GetFeature",
-                    "typeName": layer_id,
-                    "outputFormat": "application/json",
-                    "maxFeatures": "1000",
-                    "CQL_FILTER": f"INTERSECTS(the_geom, {geometry})"
-                }
-                
-                # Make WFS request
-                response = requests.get(WFS_URL, params=wfs_params, timeout=30)
-                layer_end_time = time.time()
-                
-                if response.status_code == 200:
-                    try:
-                        geo_json = response.json()
-                        features = geo_json.get("features", [])
-                        
-                        results[layer_id] = {
-                            "success": True,
-                            "features": features,
-                            "count": len(features),
-                            "loadTime": (layer_end_time - layer_start_time) * 1000,  # Convert to ms
-                            "layerName": next((layer["name"] for layer in AVAILABLE_LAYERS if layer["id"] == layer_id), layer_id)
-                        }
-                    except json.JSONDecodeError:
-                        results[layer_id] = {
-                            "success": False,
-                            "features": [],
-                            "count": 0,
-                            "loadTime": (layer_end_time - layer_start_time) * 1000,
-                            "error": "Invalid JSON response",
-                            "layerName": next((layer["name"] for layer in AVAILABLE_LAYERS if layer["id"] == layer_id), layer_id)
-                        }
-                else:
-                    results[layer_id] = {
-                        "success": False,
-                        "features": [],
-                        "count": 0,
-                        "loadTime": (layer_end_time - layer_start_time) * 1000,
-                        "error": f"HTTP {response.status_code}",
-                        "layerName": next((layer["name"] for layer in AVAILABLE_LAYERS if layer["id"] == layer_id), layer_id)
+            # Try different geometry field names
+            field_names = ["geom", "the_geom", "geometry"]  # Prioritize 'geom' as it worked before
+            success = False
+            
+            for field_name in field_names:
+                try:
+                    # Prepare WFS request
+                    wfs_params = {
+                        "service": "WFS",
+                        "version": "1.0.0",  # Use 1.0.0 as it worked in queries.py
+                        "request": "GetFeature",
+                        "typeName": layer_id,
+                        "outputFormat": "application/json",
+                        "maxFeatures": "1000",  # Get all features for spatial query
+                        "CQL_FILTER": f"INTERSECTS({field_name}, {geometry})"
                     }
                     
-            except requests.RequestException as e:
+                    # Make WFS request
+                    print(f"DEBUG: Trying field '{field_name}' with params: {wfs_params}")
+                    response = requests.get(WFS_URL, params=wfs_params, timeout=30)
+                    print(f"DEBUG: Response status: {response.status_code}")
+                    layer_end_time = time.time()  # Update after request
+                    
+                    if response.status_code == 200:
+                        try:
+                            geo_json = response.json()
+                            features = geo_json.get("features", [])
+                            print(f"DEBUG: Success with field '{field_name}' - found {len(features)} features")
+                            
+                            results[layer_id] = {
+                                "success": True,
+                                "features": features,
+                                "count": len(features),
+                                "loadTime": (layer_end_time - layer_start_time) * 1000,  # Convert to ms
+                                "layerName": next((layer["name"] for layer in AVAILABLE_LAYERS if layer["id"] == layer_id), layer_id),
+                                "field_used": field_name
+                            }
+                            success = True
+                            break  # Found working field name
+                        except json.JSONDecodeError as e:
+                            print(f"DEBUG: JSON decode error with field '{field_name}': {e}")
+                            continue  # Try next field name
+                    else:
+                        print(f"DEBUG: Failed with field '{field_name}' - HTTP {response.status_code}")
+                        continue  # Try next field name
+                        
+                except requests.RequestException as e:
+                    print(f"DEBUG: Request exception with field '{field_name}': {e}")
+                    layer_end_time = time.time()  # Update on exception
+                    continue  # Try next field name
+            
+            # If no field name worked, return error
+            if not success:
+                layer_end_time = time.time()  # Ensure it's updated
+                results[layer_id] = {
+                    "success": False,
+                    "features": [],
+                    "count": 0,
+                    "loadTime": (layer_end_time - layer_start_time) * 1000,
+                    "error": "No working geometry field found",
+                    "layerName": next((layer["name"] for layer in AVAILABLE_LAYERS if layer["id"] == layer_id), layer_id)
+                }
+        
+        total_time = (time.time() - start_time) * 1000
+        
+        return jsonify({
+            "success": True,
+            "results": results,
+            "totalTime": total_time,
+            "queryTime": datetime.now().isoformat(),
+            "geometry": geometry
+        })
+        
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/spatial-query-paginated", methods=["POST"])
+def spatial_query_paginated():
+    """Perform spatial query with pagination support"""
+    try:
+        data = request.get_json()
+        geometry = data.get("geometry")  # WKT format
+        layers = data.get("layers", [])  # List of layer IDs to query
+        page = int(data.get("page", 1))
+        page_size = int(data.get("pageSize", 100))
+        start_index = (page - 1) * page_size
+        
+        if not geometry:
+            return jsonify({"error": "Geometry (WKT) is required"}), 400
+        
+        if not layers:
+            return jsonify({"error": "At least one layer is required"}), 400
+        
+        start_time = time.time()
+        results = {}
+        
+        # Query each layer
+        for layer_id in layers:
+            layer_start_time = time.time()
+            layer_end_time = time.time()  # Initialize at the beginning
+            
+            # Try different geometry field names
+            field_names = ["geom", "the_geom", "geometry"]  # Prioritize 'geom' as it works
+            success = False
+            
+            for field_name in field_names:
+                try:
+                    # First, get total count
+                    count_params = {
+                        "service": "WFS",
+                        "version": "1.0.0",
+                        "request": "GetFeature",
+                        "typeName": layer_id,
+                        "resultType": "hits",
+                        "CQL_FILTER": f"INTERSECTS({field_name}, {geometry})"
+                    }
+                    
+                    print(f"DEBUG: Getting count for spatial query with params: {count_params}")
+                    count_response = requests.get(WFS_URL, params=count_params, timeout=30)
+                    
+                    if count_response.status_code == 200:
+                        try:
+                            count_text = count_response.text
+                            print(f"DEBUG: Full count response text: {count_text}")
+                            import re
+                            
+                            # Parse XML response to extract total count
+                            # Look for numberOfFeatures attribute in FeatureCollection
+                            number_match = re.search(r'numberOfFeatures="(\d+)"', count_text)
+                            if number_match:
+                                total_features = int(number_match.group(1))
+                                print(f"DEBUG: Found numberOfFeatures: {total_features}")
+                            else:
+                                # Try alternative patterns
+                                alt_match = re.search(r'numberOfFeatures=(\d+)', count_text)
+                                if alt_match:
+                                    total_features = int(alt_match.group(1))
+                                    print(f"DEBUG: Found numberOfFeatures (alt): {total_features}")
+                                else:
+                                    # Try numberMatched (WFS 2.0.0)
+                                    matched_match = re.search(r'numberMatched="(\d+)"', count_text)
+                                    if matched_match:
+                                        total_features = int(matched_match.group(1))
+                                        print(f"DEBUG: Found numberMatched: {total_features}")
+                                    else:
+                                        # Try numberReturned
+                                        returned_match = re.search(r'numberReturned="(\d+)"', count_text)
+                                        if returned_match:
+                                            total_features = int(returned_match.group(1))
+                                            print(f"DEBUG: Found numberReturned: {total_features}")
+                                        else:
+                                            print(f"DEBUG: No count found in XML response")
+                                            print(f"DEBUG: Full response: {count_text}")
+                                            total_features = 0
+                            
+                            if total_features > 0:
+                                print(f"DEBUG: Spatial query found {total_features} total features")
+                                
+                                # Now get paginated features
+                                wfs_params = {
+                                    "service": "WFS",
+                                    "version": "1.0.0",
+                                    "request": "GetFeature",
+                                    "typeName": layer_id,
+                                    "outputFormat": "application/json",
+                                    "maxFeatures": str(page_size),
+                                    "startIndex": str(start_index),
+                                    "CQL_FILTER": f"INTERSECTS({field_name}, {geometry})"
+                                }
+                                
+                                print(f"DEBUG: Getting paginated features with params: {wfs_params}")
+                                response = requests.get(WFS_URL, params=wfs_params, timeout=30)
+                                layer_end_time = time.time()
+                                
+                                if response.status_code == 200:
+                                    try:
+                                        geo_json = response.json()
+                                        features = geo_json.get("features", [])
+                                        print(f"DEBUG: Success with field '{field_name}' - found {len(features)} features for page {page}")
+                                        
+                                        results[layer_id] = {
+                                            "success": True,
+                                            "features": features,
+                                            "count": len(features),
+                                            "totalFeatures": total_features,
+                                            "totalPages": max(1, (total_features + page_size - 1) // page_size),
+                                            "currentPage": page,
+                                            "pageSize": page_size,
+                                            "loadTime": (layer_end_time - layer_start_time) * 1000,
+                                            "layerName": next((layer["name"] for layer in AVAILABLE_LAYERS if layer["id"] == layer_id), layer_id),
+                                            "field_used": field_name
+                                        }
+                                        success = True
+                                        break
+                                    except json.JSONDecodeError as e:
+                                        print(f"DEBUG: JSON decode error with field '{field_name}': {e}")
+                                        continue
+                                else:
+                                    print(f"DEBUG: Failed with field '{field_name}' - HTTP {response.status_code}")
+                                    continue
+                            else:
+                                print(f"DEBUG: Could not parse total count from response or total features is 0")
+                                continue
+                        except Exception as e:
+                            print(f"DEBUG: Error parsing count response: {e}")
+                            continue
+                    else:
+                        print(f"DEBUG: Count request failed with status: {count_response.status_code}")
+                        continue
+                        
+                except requests.RequestException as e:
+                    print(f"DEBUG: Request exception with field '{field_name}': {e}")
+                    layer_end_time = time.time()
+                    continue
+            
+            # If no field name worked, return error
+            if not success:
                 layer_end_time = time.time()
                 results[layer_id] = {
                     "success": False,
                     "features": [],
                     "count": 0,
                     "loadTime": (layer_end_time - layer_start_time) * 1000,
-                    "error": str(e),
+                    "error": "No working geometry field found",
                     "layerName": next((layer["name"] for layer in AVAILABLE_LAYERS if layer["id"] == layer_id), layer_id)
                 }
         
@@ -158,7 +328,7 @@ def get_features():
         if get_total_count:
             count_params = {
                 "service": "WFS",
-                "version": "1.1.0",  # Use 1.1.0 for resultType=hits
+                "version": "1.0.0",  # Use 1.0.0 as it worked in queries.py
                 "request": "GetFeature",
                 "typeName": layer_id,
                 "resultType": "hits"  # Only get count, not features
@@ -166,7 +336,7 @@ def get_features():
             
             # Add spatial filter if geometry provided
             if geometry and geometry != "1=1":
-                count_params["CQL_FILTER"] = f"INTERSECTS(the_geom, {geometry})"
+                count_params["CQL_FILTER"] = f"INTERSECTS(geom, {geometry})"  # Use 'geom' as it worked before
             
             print(f"DEBUG: Making count request to GeoServer with params: {count_params}")
             count_response = requests.get(WFS_URL, params=count_params, timeout=30)
@@ -244,20 +414,21 @@ def get_features():
                 print(f"DEBUG: Error getting total count for pagination: {e}")
                 total_features = 0
         
-        # Prepare WFS request with pagination
+        # Prepare WFS request
         wfs_params = {
             "service": "WFS",
-            "version": "1.1.0",  # Use 1.1.0 for consistency
+            "version": "1.0.0",  # Use 1.0.0 as it worked in queries.py
             "request": "GetFeature",
             "typeName": layer_id,
             "outputFormat": "application/json",
-            "maxFeatures": page_size,
-            "startIndex": start_index
+            "maxFeatures": str(page_size), # Use page_size for maxFeatures
+            "startIndex": str(start_index),
+            "CQL_FILTER": "1=1"  # Default filter to show all features
         }
         
         # Add spatial filter if geometry provided
         if geometry and geometry != "1=1":
-            wfs_params["CQL_FILTER"] = f"INTERSECTS(the_geom, {geometry})"
+            wfs_params["CQL_FILTER"] = f"INTERSECTS(geom, {geometry})"  # Use 'geom' as it worked before
         
         # Make WFS request
         print(f"DEBUG: Making WFS request with params: {wfs_params}")
@@ -287,10 +458,14 @@ def get_features():
                         "endIndex": start_index + len(features) - 1
                     }
                 })
-            except json.JSONDecodeError:
-                return jsonify({"error": "Invalid JSON response from GeoServer"}), 500
+            except json.JSONDecodeError as e:
+                print(f"DEBUG: JSON decode error: {e}")
+                print(f"DEBUG: Response text: {response.text[:500]}...")
+                return jsonify({"error": f"Invalid JSON response from GeoServer: {str(e)}"}), 500
         else:
-            return jsonify({"error": f"WFS request failed: {response.status_code}"}), 500
+            print(f"DEBUG: WFS request failed with status: {response.status_code}")
+            print(f"DEBUG: Response text: {response.text[:500]}...")
+            return jsonify({"error": f"WFS request failed: HTTP {response.status_code} - {response.text[:200]}"}), 500
             
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -306,6 +481,503 @@ def get_performance():
         "timestamp": datetime.now().isoformat()
     })
 
+@app.route("/api/test-layer", methods=["GET"])
+def test_layer():
+    """Test endpoint to check layer structure and available fields"""
+    try:
+        layer_id = request.args.get("layer", "Picarro:Boundary")
+        
+        # Make a simple WFS request to get one feature and see the structure
+        wfs_params = {
+            "service": "WFS",
+            "version": "1.1.0",
+            "request": "GetFeature",
+            "typeName": layer_id,
+            "outputFormat": "application/json",
+            "maxFeatures": "1"
+        }
+        
+        print(f"DEBUG: Testing layer structure with params: {wfs_params}")
+        response = requests.get(WFS_URL, params=wfs_params, timeout=30)
+        print(f"DEBUG: Test response status: {response.status_code}")
+        
+        if response.status_code == 200:
+            try:
+                geo_json = response.json()
+                features = geo_json.get("features", [])
+                if features:
+                    feature = features[0]
+                    properties = feature.get("properties", {})
+                    geometry = feature.get("geometry", {})
+                    
+                    print(f"DEBUG: Feature properties: {list(properties.keys())}")
+                    print(f"DEBUG: Geometry type: {geometry.get('type')}")
+                    
+                    # Print actual coordinates to see coordinate system
+                    if geometry.get("type") == "MultiPolygon":
+                        coords = geometry.get("coordinates", [])
+                        if coords and coords[0] and coords[0][0]:
+                            print(f"DEBUG: First polygon coordinates: {coords[0][0][:5]}...")  # First 5 coordinates
+                    
+                    return jsonify({
+                        "success": True,
+                        "properties": list(properties.keys()),
+                        "geometry_type": geometry.get("type"),
+                        "sample_feature": feature,
+                        "coordinates_sample": coords[0][0][:5] if geometry.get("type") == "MultiPolygon" and coords and coords[0] and coords[0][0] else None
+                    })
+                else:
+                    return jsonify({"success": False, "error": "No features found"})
+            except json.JSONDecodeError as e:
+                return jsonify({"success": False, "error": f"Invalid JSON: {str(e)}", "response": response.text[:500]})
+        else:
+            return jsonify({"success": False, "error": f"HTTP {response.status_code}", "response": response.text[:500]})
+            
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/test-spatial", methods=["GET"])
+def test_spatial():
+    """Test spatial query with a simple bounding box"""
+    try:
+        layer_id = request.args.get("layer", "Picarro:Boundary")
+        
+        # Use a simple bounding box for testing
+        test_geometry = "POLYGON((-122.1 37.4, -122.0 37.4, -122.0 37.5, -122.1 37.5, -122.1 37.4))"
+        
+        # Test with different geometry field names
+        field_names = ["the_geom", "geom", "geometry"]
+        
+        results = {}
+        
+        for field_name in field_names:
+            wfs_params = {
+                "service": "WFS",
+                "version": "1.1.0",
+                "request": "GetFeature",
+                "typeName": layer_id,
+                "outputFormat": "application/json",
+                "maxFeatures": "10",
+                "CQL_FILTER": f"INTERSECTS({field_name}, {test_geometry})"
+            }
+            
+            print(f"DEBUG: Testing with field '{field_name}' and params: {wfs_params}")
+            response = requests.get(WFS_URL, params=wfs_params, timeout=30)
+            
+            if response.status_code == 200:
+                try:
+                    geo_json = response.json()
+                    features = geo_json.get("features", [])
+                    results[field_name] = {
+                        "success": True,
+                        "count": len(features),
+                        "features": features[:2]  # Just first 2 features for debugging
+                    }
+                except json.JSONDecodeError:
+                    results[field_name] = {
+                        "success": False,
+                        "error": "Invalid JSON response",
+                        "response": response.text[:200]
+                    }
+            else:
+                results[field_name] = {
+                    "success": False,
+                    "error": f"HTTP {response.status_code}",
+                    "response": response.text[:200]
+                }
+        
+        return jsonify({
+            "test_geometry": test_geometry,
+            "results": results
+        })
+        
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/test-large-area", methods=["GET"])
+def test_large_area():
+    """Test spatial query with a larger area to see if we can find any features"""
+    try:
+        layer_id = request.args.get("layer", "Picarro:Boundary")
+        
+        # Use a much larger bounding box for testing
+        test_geometry = "POLYGON((-122.5 37.0, -121.5 37.0, -121.5 38.0, -122.5 38.0, -122.5 37.0))"
+        
+        wfs_params = {
+            "service": "WFS",
+            "version": "1.1.0",
+            "request": "GetFeature",
+            "typeName": layer_id,
+            "outputFormat": "application/json",
+            "maxFeatures": "10",
+            "CQL_FILTER": f"INTERSECTS(the_geom, {test_geometry})"
+        }
+        
+        print(f"DEBUG: Testing large area with params: {wfs_params}")
+        response = requests.get(WFS_URL, params=wfs_params, timeout=30)
+        
+        if response.status_code == 200:
+            try:
+                geo_json = response.json()
+                features = geo_json.get("features", [])
+                return jsonify({
+                    "success": True,
+                    "count": len(features),
+                    "features": features[:2]  # Just first 2 features for debugging
+                })
+            except json.JSONDecodeError:
+                return jsonify({
+                    "success": False,
+                    "error": "Invalid JSON response",
+                    "response": response.text[:200]
+                })
+        else:
+            return jsonify({
+                "success": False,
+                "error": f"HTTP {response.status_code}",
+                "response": response.text[:200]
+            })
+        
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/test-coordinates", methods=["GET"])
+def test_coordinates():
+    """Test coordinate transformation and spatial query with different coordinate systems"""
+    try:
+        layer_id = request.args.get("layer", "Picarro:Boundary")
+        
+        # Test coordinates in both EPSG:4326 and EPSG:3857
+        test_cases = {
+            "epsg_4326": "POLYGON((-122.1 37.4, -122.0 37.4, -122.0 37.5, -122.1 37.5, -122.1 37.4))",
+            "epsg_3857": "POLYGON((-13600000 4500000, -13580000 4500000, -13580000 4520000, -13600000 4520000, -13600000 4500000))"
+        }
+        
+        results = {}
+        
+        for coord_system, geometry in test_cases.items():
+            wfs_params = {
+                "service": "WFS",
+                "version": "1.1.0",
+                "request": "GetFeature",
+                "typeName": layer_id,
+                "outputFormat": "application/json",
+                "maxFeatures": "5",
+                "CQL_FILTER": f"INTERSECTS(the_geom, {geometry})"
+            }
+            
+            print(f"DEBUG: Testing {coord_system} with params: {wfs_params}")
+            response = requests.get(WFS_URL, params=wfs_params, timeout=30)
+            
+            if response.status_code == 200:
+                try:
+                    geo_json = response.json()
+                    features = geo_json.get("features", [])
+                    results[coord_system] = {
+                        "success": True,
+                        "count": len(features),
+                        "geometry": geometry
+                    }
+                except json.JSONDecodeError:
+                    results[coord_system] = {
+                        "success": False,
+                        "error": "Invalid JSON response",
+                        "geometry": geometry
+                    }
+            else:
+                results[coord_system] = {
+                    "success": False,
+                    "error": f"HTTP {response.status_code}",
+                    "geometry": geometry
+                }
+        
+        return jsonify({
+            "test_cases": results,
+            "note": "EPSG:4326 should work, EPSG:3857 might fail if GeoServer expects 4326"
+        })
+        
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/test-extent", methods=["GET"])
+def test_extent():
+    """Test with a very large area to see if we can find any features"""
+    try:
+        layer_id = request.args.get("layer", "Picarro:Boundary")
+        
+        # Use a very large bounding box that should cover most of California
+        test_geometry = "POLYGON((-125.0 32.0, -114.0 32.0, -114.0 42.0, -125.0 42.0, -125.0 32.0))"
+        
+        wfs_params = {
+            "service": "WFS",
+            "version": "1.1.0",
+            "request": "GetFeature",
+            "typeName": layer_id,
+            "outputFormat": "application/json",
+            "maxFeatures": "10",
+            "CQL_FILTER": f"INTERSECTS(the_geom, {test_geometry})"
+        }
+        
+        print(f"DEBUG: Testing large extent with params: {wfs_params}")
+        response = requests.get(WFS_URL, params=wfs_params, timeout=30)
+        
+        if response.status_code == 200:
+            try:
+                geo_json = response.json()
+                features = geo_json.get("features", [])
+                
+                # If we find features, let's check their coordinates
+                if features:
+                    print(f"DEBUG: Found {len(features)} features in large extent")
+                    for i, feature in enumerate(features[:3]):  # Check first 3 features
+                        geometry = feature.get("geometry", {})
+                        if geometry.get("type") == "MultiPolygon":
+                            coords = geometry.get("coordinates", [])
+                            if coords and coords[0] and coords[0][0]:
+                                # Get first coordinate of first polygon
+                                first_coord = coords[0][0][0]
+                                print(f"DEBUG: Feature {i+1} first coordinate: {first_coord}")
+                
+                return jsonify({
+                    "success": True,
+                    "count": len(features),
+                    "test_geometry": test_geometry,
+                    "features": features[:2]  # Just first 2 features for debugging
+                })
+            except json.JSONDecodeError:
+                return jsonify({
+                    "success": False,
+                    "error": "Invalid JSON response",
+                    "response": response.text[:200]
+                })
+        else:
+            return jsonify({
+                "success": False,
+                "error": f"HTTP {response.status_code}",
+                "response": response.text[:200]
+            })
+        
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/test-correct-area", methods=["GET"])
+def test_correct_area():
+    """Test with a polygon that should intersect with the actual features"""
+    try:
+        layer_id = request.args.get("layer", "Picarro:Boundary")
+        
+        # Use coordinates that should intersect with the actual features
+        # Based on the coordinates we found: -122.01028502, 37.4351867 to -121.92562039, 37.39958956
+        test_geometry = "POLYGON((-122.1 37.4, -121.9 37.4, -121.9 37.5, -122.1 37.5, -122.1 37.4))"
+        
+        wfs_params = {
+            "service": "WFS",
+            "version": "1.1.0",
+            "request": "GetFeature",
+            "typeName": layer_id,
+            "outputFormat": "application/json",
+            "maxFeatures": "10",
+            "CQL_FILTER": f"INTERSECTS(the_geom, {test_geometry})"
+        }
+        
+        print(f"DEBUG: Testing correct area with params: {wfs_params}")
+        response = requests.get(WFS_URL, params=wfs_params, timeout=30)
+        
+        if response.status_code == 200:
+            try:
+                geo_json = response.json()
+                features = geo_json.get("features", [])
+                return jsonify({
+                    "success": True,
+                    "count": len(features),
+                    "test_geometry": test_geometry,
+                    "features": features[:2]  # Just first 2 features for debugging
+                })
+            except json.JSONDecodeError:
+                return jsonify({
+                    "success": False,
+                    "error": "Invalid JSON response",
+                    "response": response.text[:200]
+                })
+        else:
+            return jsonify({
+                "success": False,
+                "error": f"HTTP {response.status_code}",
+                "response": response.text[:200]
+            })
+        
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/test-geometry-field", methods=["GET"])
+def test_geometry_field():
+    """Test to find the correct geometry field name"""
+    try:
+        layer_id = request.args.get("layer", "Picarro:Boundary")
+        
+        # Get a feature without any filter to see its structure
+        wfs_params = {
+            "service": "WFS",
+            "version": "1.1.0",
+            "request": "GetFeature",
+            "typeName": layer_id,
+            "outputFormat": "application/json",
+            "maxFeatures": "1"
+        }
+        
+        print(f"DEBUG: Testing geometry field with params: {wfs_params}")
+        response = requests.get(WFS_URL, params=wfs_params, timeout=30)
+        
+        if response.status_code == 200:
+            try:
+                geo_json = response.json()
+                features = geo_json.get("features", [])
+                if features:
+                    feature = features[0]
+                    properties = feature.get("properties", {})
+                    
+                    # Look for geometry-related fields in properties
+                    geometry_fields = [key for key in properties.keys() if 'geom' in key.lower() or 'geometry' in key.lower()]
+                    
+                    print(f"DEBUG: All properties: {list(properties.keys())}")
+                    print(f"DEBUG: Geometry-related fields: {geometry_fields}")
+                    
+                    return jsonify({
+                        "success": True,
+                        "all_properties": list(properties.keys()),
+                        "geometry_fields": geometry_fields,
+                        "sample_feature": feature
+                    })
+                else:
+                    return jsonify({"success": False, "error": "No features found"})
+            except json.JSONDecodeError:
+                return jsonify({
+                    "success": False,
+                    "error": "Invalid JSON response",
+                    "response": response.text[:200]
+                })
+        else:
+            return jsonify({
+                "success": False,
+                "error": f"HTTP {response.status_code}",
+                "response": response.text[:200]
+            })
+        
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/test-spatial-approaches", methods=["GET"])
+def test_spatial_approaches():
+    """Test different spatial query approaches"""
+    try:
+        layer_id = request.args.get("layer", "Picarro:Boundary")
+        
+        # Test different approaches
+        approaches = {
+            "the_geom_intersects": f"INTERSECTS(the_geom, POLYGON((-122.1 37.4, -121.9 37.4, -121.9 37.5, -122.1 37.5, -122.1 37.4)))",
+            "geom_intersects": f"INTERSECTS(geom, POLYGON((-122.1 37.4, -121.9 37.4, -121.9 37.5, -122.1 37.5, -122.1 37.4)))",
+            "geometry_intersects": f"INTERSECTS(geometry, POLYGON((-122.1 37.4, -121.9 37.4, -121.9 37.5, -122.1 37.5, -122.1 37.4)))",
+            "bbox": "BBOX(the_geom, -122.1, 37.4, -121.9, 37.5)",
+            "bbox_geom": "BBOX(geom, -122.1, 37.4, -121.9, 37.5)",
+            "no_filter": "1=1"
+        }
+        
+        results = {}
+        
+        for approach_name, filter_expr in approaches.items():
+            wfs_params = {
+                "service": "WFS",
+                "version": "1.1.0",
+                "request": "GetFeature",
+                "typeName": layer_id,
+                "outputFormat": "application/json",
+                "maxFeatures": "5"
+            }
+            
+            if filter_expr != "1=1":
+                wfs_params["CQL_FILTER"] = filter_expr
+            
+            print(f"DEBUG: Testing {approach_name} with params: {wfs_params}")
+            response = requests.get(WFS_URL, params=wfs_params, timeout=30)
+            
+            if response.status_code == 200:
+                try:
+                    geo_json = response.json()
+                    features = geo_json.get("features", [])
+                    results[approach_name] = {
+                        "success": True,
+                        "count": len(features),
+                        "filter": filter_expr
+                    }
+                except json.JSONDecodeError:
+                    results[approach_name] = {
+                        "success": False,
+                        "error": "Invalid JSON response",
+                        "filter": filter_expr
+                    }
+            else:
+                results[approach_name] = {
+                    "success": False,
+                    "error": f"HTTP {response.status_code}",
+                    "filter": filter_expr
+                }
+        
+        return jsonify({
+            "test_results": results,
+            "note": "Check which approach returns features"
+        })
+        
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/test-huge-area", methods=["GET"])
+def test_huge_area():
+    """Test with a huge area that should definitely contain the features"""
+    try:
+        layer_id = request.args.get("layer", "Picarro:Boundary")
+        
+        # Use a huge area that should definitely contain the features
+        # Based on the coordinates we found: around -122.0, 37.4
+        test_geometry = "POLYGON((-123.0 36.0, -120.0 36.0, -120.0 39.0, -123.0 39.0, -123.0 36.0))"
+        
+        wfs_params = {
+            "service": "WFS",
+            "version": "1.1.0",
+            "request": "GetFeature",
+            "typeName": layer_id,
+            "outputFormat": "application/json",
+            "maxFeatures": "10",
+            "CQL_FILTER": f"INTERSECTS(the_geom, {test_geometry})"
+        }
+        
+        print(f"DEBUG: Testing huge area with params: {wfs_params}")
+        response = requests.get(WFS_URL, params=wfs_params, timeout=30)
+        
+        if response.status_code == 200:
+            try:
+                geo_json = response.json()
+                features = geo_json.get("features", [])
+                return jsonify({
+                    "success": True,
+                    "count": len(features),
+                    "test_geometry": test_geometry,
+                    "features": features[:2]  # Just first 2 features for debugging
+                })
+            except json.JSONDecodeError:
+                return jsonify({
+                    "success": False,
+                    "error": "Invalid JSON response",
+                    "response": response.text[:200]
+                })
+        else:
+            return jsonify({
+                "success": False,
+                "error": f"HTTP {response.status_code}",
+                "response": response.text[:200]
+            })
+        
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 if __name__ == "__main__":

@@ -1,166 +1,131 @@
-# React OpenLayers WMS Application
+# Web GIS Application with OpenLayers
 
-A modern React application that integrates OpenLayers to display WMS (Web Map Service) layers from GeoServer. This application demonstrates basic GIS functionality including map navigation, layer management, and base map switching.
+A professional web GIS application built with React.js, OpenLayers, and Python Flask backend.
 
 ## Features
 
-- **Interactive Map**: Full-screen OpenLayers map with zoom, pan, and navigation controls
-- **WMS Layer Integration**: Displays a sample WMS layer from GeoServer (US States)
-- **Base Map Gallery**: Switch between different base maps:
-  - OpenStreetMap
-  - Satellite Imagery
-  - Street Map
-- **Layer Controls**: Toggle WMS layer visibility
-- **Scale Display**: Shows current map scale
-- **Responsive Design**: Works on desktop and mobile devices
+- Interactive map with multiple layers
+- Spatial query functionality with drawing tools
+- Feature table with pagination
+- Layer management and legend
+- Measurement tools
+- Professional UI with collapsible panels
 
-## Prerequisites
+## Architecture
 
-- Node.js (version 14 or higher)
-- npm or yarn package manager
+- **Frontend**: React.js with OpenLayers for map rendering
+- **Backend**: Python Flask API for WFS calls
+- **GeoServer**: WMS calls directly from frontend, WFS calls via backend
+- **Database**: GeoServer with spatial data
 
-## Installation
+## Working Spatial Query Implementation
 
-1. Clone or download this repository
-2. Navigate to the project directory
-3. Install dependencies:
+### Key Configuration for Working Spatial Queries
+
+The spatial query functionality works with the following configuration:
+
+1. **Geometry Field Name**: Use `the_geom` (not `geom`)
+2. **WFS Version**: Use `1.0.0` for spatial queries
+3. **Coordinate System**: Transform coordinates from map projection (EPSG:3857) to EPSG:4326 before sending to backend
+4. **Field Priority**: Try `["the_geom", "geom", "geometry"]` in order
+
+### Backend Configuration (api/app.py)
+
+```python
+# Spatial query with working configuration
+wfs_params = {
+    "service": "WFS",
+    "version": "1.0.0",  # Use 1.0.0 for spatial queries
+    "request": "GetFeature",
+    "typeName": layer_id,
+    "outputFormat": "application/json",
+    "maxFeatures": "1000",
+    "CQL_FILTER": f"INTERSECTS(the_geom, {geometry})"  # Use the_geom field
+}
+```
+
+### Frontend Coordinate Transformation (src/App.js)
+
+```javascript
+// Transform coordinates from map projection to EPSG:4326
+const coordStrings = coordinates.map(coord => {
+    const transformed = transform(coord, map.getView().getProjection(), 'EPSG:4326');
+    return `${transformed[0].toFixed(6)} ${transformed[1].toFixed(6)}`;
+});
+wktGeometry = `POLYGON((${coordStrings.join(',')}))`;
+```
+
+### Why This Works
+
+- **WFS 1.0.0**: More compatible with spatial queries
+- **the_geom field**: Correct geometry field name in GeoServer
+- **EPSG:4326 coordinates**: GeoServer expects WGS84 coordinates for spatial queries
+- **Coordinate transformation**: Ensures proper spatial relationship calculations
+
+## Installation and Setup
+
+### Prerequisites
+
+- Node.js and npm
+- Python 3.7+
+- GeoServer running on http://20.20.152.180:8181/geoserver
+
+### Backend Setup
+
+```bash
+cd api
+pip install flask flask-cors requests
+python app.py
+```
+
+### Frontend Setup
 
 ```bash
 npm install
-```
-
-## Running the Application
-
-Start the development server:
-
-```bash
 npm start
 ```
 
-The application will open in your browser at `http://localhost:3000`
+### Windows Setup
 
-## Building for Production
-
-To create a production build:
+For Windows users, use the provided batch files:
 
 ```bash
-npm run build
+start_servers.bat
 ```
 
-## Project Structure
+## API Endpoints
 
-```
-src/
-├── App.js          # Main application component
-├── App.css         # Application-specific styles
-├── index.js        # React entry point
-└── index.css       # Global styles and OpenLayers CSS
+- `GET /api/layers` - Get available layers
+- `POST /api/spatial-query` - Perform spatial queries
+- `GET /api/features` - Get features with pagination
+- `GET /api/performance` - Performance metrics
 
-public/
-└── index.html      # HTML template
+## Widgets
 
-package.json        # Dependencies and scripts
-README.md          # This file
-```
-
-## Key Components
-
-### Map Configuration
-- Uses OpenLayers 8.2.0
-- Centers on the United States (longitude: -98.5795, latitude: 39.8283)
-- Zoom levels: 2-18
-- Includes scale line and zoom slider controls
-
-### WMS Layer
-- Source: GeoServer demo server
-- Layer: `topp:states` (US States boundaries)
-- Format: PNG with transparency
-- Version: WMS 1.1.1
-- Layer Type: ImageLayer (not TileLayer for WMS)
-
-### Base Maps
-- **OpenStreetMap**: Default open-source street map
-- **Satellite**: High-resolution satellite imagery from ArcGIS
-- **Streets**: Detailed street map from ArcGIS
-
-## Customization
-
-### Changing the WMS Layer
-To use a different WMS layer, modify the `wmsSource` configuration in `App.js`:
-
-```javascript
-const wmsSource = new ImageWMS({
-  url: 'YOUR_GEOSERVER_URL/wms',
-  params: {
-    'LAYERS': 'YOUR_WORKSPACE:YOUR_LAYER',
-    'TILED': true,
-    'VERSION': '1.1.1',
-    'FORMAT': 'image/png',
-    'TRANSPARENT': true
-  },
-  serverType: 'geoserver',
-  crossOrigin: 'anonymous'
-});
-```
-
-### Adding More Layers
-To add additional layers, create new layer instances and add them to the map:
-
-```javascript
-// For WMS layers, use ImageLayer
-const wmsLayer = new ImageLayer({
-  source: new ImageWMS({
-    url: 'YOUR_WMS_URL',
-    params: { 'LAYERS': 'YOUR_LAYER' }
-  })
-});
-
-// For tile layers, use TileLayer
-const tileLayer = new TileLayer({
-  source: new XYZ({
-    url: 'YOUR_TILE_URL'
-  })
-});
-
-map.addLayer(wmsLayer);
-map.addLayer(tileLayer);
-```
-
-## Dependencies
-
-- **React**: 18.2.0 - UI framework
-- **OpenLayers**: 8.2.0 - Mapping library
-- **ol-ext**: 4.0.0 - OpenLayers extensions
-- **react-scripts**: 5.0.1 - Development tools
-
-## Browser Support
-
-- Chrome (recommended)
-- Firefox
-- Safari
-- Edge
+- **Layers Panel**: Layer visibility and management
+- **Spatial Query**: Draw polygons for spatial filtering
+- **Feature Table**: Paginated feature display
+- **Legend**: Layer symbology display
+- **Measure**: Distance and area measurement tools
 
 ## Troubleshooting
 
-### CORS Issues
-If you encounter CORS errors with WMS layers, ensure your GeoServer is configured to allow cross-origin requests.
+### Spatial Queries Not Working
 
-### Layer Not Displaying
-- Check the WMS URL and layer name
-- Verify the layer is published in GeoServer
-- Check browser console for error messages
-- Ensure you're using `ImageLayer` for WMS layers, not `TileLayer`
-- Verify CORS settings on your GeoServer
+1. Check that WFS version is `1.0.0`
+2. Verify geometry field name is `the_geom`
+3. Ensure coordinates are in EPSG:4326
+4. Check GeoServer layer configuration
 
-### Performance Issues
-- Use tiled WMS layers for better performance
-- Consider using vector layers for interactive features
-- Optimize layer styling and symbology
+### Table Not Loading
 
-## License
+1. Verify backend is running on port 5000
+2. Check GeoServer connectivity
+3. Ensure layer exists in GeoServer
 
-This project is open source and available under the MIT License.
+## Development Notes
 
-## Contributing
-
-Feel free to submit issues and enhancement requests! 
+- WMS calls go directly from frontend to GeoServer
+- WFS calls are proxied through the backend
+- Spatial queries require coordinate transformation
+- Pagination is server-side with 100 features per page 

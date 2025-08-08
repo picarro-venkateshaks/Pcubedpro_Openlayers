@@ -1,0 +1,9 @@
+[33mcommit 0e03ffa9adc40949bbdb5af428291bbc7d8f59b0[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mwfs-be[m[33m, [m[1;31morigin/wfs-be[m[33m)[m
+Author: picarro-dgambhir <dgambhir@picarro.com>
+Date:   Fri Aug 8 14:02:25 2025 +0530
+
+    working pagination
+
+api/app.py
+src/App.css
+src/App.js

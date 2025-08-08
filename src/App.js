@@ -11,7 +11,12 @@ import XYZ from 'ol/source/XYZ';
 import Draw from 'ol/interaction/Draw';
 import { Fill, Stroke, Style } from 'ol/style';
 import { transform } from 'ol/proj';
+import { GeoJSON } from 'ol/format';
+import Feature from 'ol/Feature';
 import './App.css';
+
+// Import widgets
+import { LeftPanel, SpatialQueryPanel, FeatureTable } from './widgets';
 
 function App() {
   const mapRef = useRef();
@@ -31,12 +36,13 @@ function App() {
   const [selectedFeatures, setSelectedFeatures] = useState([]);
   const [originalReportAreaSource, setOriginalReportAreaSource] = useState(null);
   const [filteredReportAreaSource, setFilteredReportAreaSource] = useState(null);
-  const [performanceMetrics, setPerformanceMetrics] = useState({});
   const [activeTab, setActiveTab] = useState('Picarro:Boundary');
   const [layerResults, setLayerResults] = useState({});
   const [availableLayers, setAvailableLayers] = useState([]);
-  const [apiConnectionStatus, setApiConnectionStatus] = useState('checking');
   const [isLoadingPage, setIsLoadingPage] = useState(false);
+  const [highlightLayer, setHighlightLayer] = useState(null);
+  const [highlightSource, setHighlightSource] = useState(null);
+  const [currentSpatialQueryGeometry, setCurrentSpatialQueryGeometry] = useState(null);
 
   const RECORDS_PER_PAGE = 100; // Server-side pagination
 
@@ -59,13 +65,26 @@ function App() {
       zIndex: 1000
     });
 
+    // Create highlight source and layer for selected features
+    const highlightSourceInstance = new VectorSource();
+    const highlightLayerInstance = new VectorLayer({
+      source: highlightSourceInstance,
+      style: new Style({
+        fill: new Fill({ color: 'rgba(0, 255, 255, 0.4)' }), // Cyan fill
+        stroke: new Stroke({ color: '#00ffff', width: 3 }) // Cyan stroke
+      }),
+      visible: true,
+      zIndex: 1001 // Higher than drawing layer
+    });
+
     // Create Report Area layer
     const reportAreaLayer = new ImageLayer({
       source: new ImageWMS({
         url: 'http://20.20.152.180:8181/geoserver/Picarro/wms',
         params: {
           'LAYERS': 'Picarro:Boundary',
-          'TILED': true
+          'TILED': true,
+          'CQL_FILTER': '1=1'  // Default filter to show all features
         },
         serverType: 'geoserver',
         // Add debugging to see WMS requests
@@ -106,12 +125,20 @@ function App() {
       ],
       view: new View({
         center: transform([-122.1430, 37.4419], 'EPSG:4326', 'EPSG:3857'),
-        zoom: 10
+        zoom: 10,
+        extent: [-13663855.396075286, 4441876.305861524, -13487744.482906241, 4532683.495464313]
       })
     });
 
     // Add drawing layer
     mapInstance.addLayer(drawingLayerInstance);
+    
+    // Add highlight layer
+    mapInstance.addLayer(highlightLayerInstance);
+
+    // Set the highlight layer and source in state
+    setHighlightLayer(highlightLayerInstance);
+    setHighlightSource(highlightSourceInstance);
 
     // Set up click handler for GetFeatureInfo
     mapInstance.on('singleclick', (evt) => {
@@ -147,6 +174,9 @@ function App() {
     setMap(mapInstance);
     setDrawingSource(drawingSourceInstance);
     setDrawingLayer(drawingLayerInstance);
+    setHighlightLayer(highlightLayerInstance);
+    setHighlightSource(highlightSourceInstance);
+    setOriginalReportAreaSource(reportAreaLayer.getSource()); // Store original source
 
     return () => {
       if (mapInstance) {
@@ -168,26 +198,26 @@ function App() {
             setActiveTab(data.layers[0].id);
             // Load all records for the first layer by default
             loadAllRecords(data.layers[0].id);
+          } else {
+            // No layers available from backend, use default
+            console.log('No layers available from backend, using default');
+            setSelectedLayer('Picarro:Boundary');
+            setActiveTab('Picarro:Boundary');
+            loadAllRecords('Picarro:Boundary');
           }
         } else {
           console.error('Failed to load layers from backend');
-          // Fallback to default layers
-          const defaultLayers = [
-            { id: 'Picarro:Boundary', name: 'Boundary', visible: true },
-            { id: 'Picarro:OtherLayer', name: 'Other Layer', visible: false }
-          ];
-          setAvailableLayers(defaultLayers);
-          loadAllRecords(defaultLayers[0].id);
+          // Fallback to default layer
+          setSelectedLayer('Picarro:Boundary');
+          setActiveTab('Picarro:Boundary');
+          loadAllRecords('Picarro:Boundary');
         }
       } catch (error) {
         console.error('Error loading layers:', error);
-        // Fallback to default layers
-        const defaultLayers = [
-          { id: 'Picarro:Boundary', name: 'Boundary', visible: true },
-          { id: 'Picarro:OtherLayer', name: 'Other Layer', visible: false }
-        ];
-        setAvailableLayers(defaultLayers);
-        loadAllRecords(defaultLayers[0].id);
+        // Fallback to default layer
+        setSelectedLayer('Picarro:Boundary');
+        setActiveTab('Picarro:Boundary');
+        loadAllRecords('Picarro:Boundary');
       }
     };
 
@@ -240,25 +270,6 @@ function App() {
   const loadAllRecords = async (layerId) => {
     await loadRecords(layerId, 1);
   };
-
-  // Test API connection
-  useEffect(() => {
-    const testConnection = async () => {
-      try {
-        const response = await fetch(`${API_BASE_URL.replace('/api', '')}/`);
-        if (response.ok) {
-          setApiConnectionStatus('connected');
-        } else {
-          setApiConnectionStatus('failed');
-        }
-      } catch (error) {
-        console.error('API connection test failed:', error);
-        setApiConnectionStatus('failed');
-      }
-    };
-
-    testConnection();
-  }, []);
 
   // Change basemap
   const changeBasemap = (basemapType) => {
@@ -325,18 +336,16 @@ function App() {
     }
   };
 
-  // Clear drawings
+  // Clear drawing
   const clearDrawing = () => {
     if (drawingSource) {
       drawingSource.clear();
     }
-    setFilteredFeatures([]);
-    setIsFeatureTableCollapsed(false);
-    setQueryResult(null);
-    setSelectedFeatures([]);
-    setCurrentPage(1);
-    setLayerResults({});
-
+    if (highlightSource) {
+      highlightSource.clear();
+    }
+    
+    // Restore original WMS source
     if (map && originalReportAreaSource) {
       const layers = map.getLayers();
       layers.forEach(layer => {
@@ -345,69 +354,58 @@ function App() {
         }
       });
       setOriginalReportAreaSource(null);
-      setFilteredReportAreaSource(null);
+    }
+    
+    // Reset table to show all features with pagination
+    setFilteredFeatures([]);
+    setCurrentPage(1);
+    setIsFeatureTableCollapsed(false);
+    setQueryResult(null);
+    setCurrentSpatialQueryGeometry(null); // Clear stored spatial query geometry
+    
+    // Reload all records for the current layer
+    if (selectedLayer) {
+      loadAllRecords(selectedLayer);
     }
   };
 
-  // Perform spatial query using backend API
+  // Perform spatial query
   const performSpatialQuery = async (bbox, geometry) => {
-    const startTime = performance.now();
+    if (!geometry) {
+      setQueryResult({ type: 'error', message: 'No geometry drawn' });
+      return;
+    }
+
     setIsQuerying(true);
     setQueryResult(null);
-    setFilteredFeatures([]);
-    setSelectedFeatures([]);
-    setCurrentPage(1);
-    setLayerResults({});
 
     try {
-      // Convert geometry to WKT
-      const coordinates = geometry.getCoordinates()[0];
-      const wktCoords = coordinates.map(coord => {
-        const transformed = transform(coord, map.getView().getProjection(), 'EPSG:4326');
-        return `${transformed[0]} ${transformed[1]}`;
-      }).join(',');
-      const wkt = `POLYGON((${wktCoords}))`;
-
-      console.log('Performing spatial query:', { bbox, wkt });
-
-      // Store original source if not already stored
-      if (!originalReportAreaSource) {
-        const layers = map.getLayers();
-        layers.forEach(layer => {
-          if (layer.get('title') === 'Report Area ATCO') {
-            setOriginalReportAreaSource(layer.getSource());
-          }
+      // Convert OpenLayers geometry to WKT format
+      let wktGeometry = '';
+      
+      if (geometry.getType() === 'Polygon') {
+        const coordinates = geometry.getCoordinates()[0]; // Get outer ring
+        const coordStrings = coordinates.map(coord => {
+          // Transform from map projection to EPSG:4326
+          const transformed = transform(coord, map.getView().getProjection(), 'EPSG:4326');
+          return `${transformed[0].toFixed(6)} ${transformed[1].toFixed(6)}`;
         });
+        wktGeometry = `POLYGON((${coordStrings.join(',')}))`;
+      } else {
+        setQueryResult({ type: 'error', message: 'Only polygon geometry is supported' });
+        setIsQuerying(false);
+        return;
       }
 
-      // Create filtered WMS source
-      const filteredSource = new ImageWMS({
-        url: 'http://20.20.152.180:8181/geoserver/Picarro/wms',
-        params: {
-          'LAYERS': selectedLayer,
-          'TILED': true,
-          'CQL_FILTER': `INTERSECTS(the_geom, ${wkt})`
-        },
-        serverType: 'geoserver',
-        // Add debugging to see filtered WMS requests
-        tileLoadFunction: function (imageTile, src) {
-          console.log('Filtered WMS Tile Request:', src);
-          imageTile.getImage().src = src;
-        }
-      });
+      console.log('Transformed WKT geometry:', wktGeometry);
 
-      setFilteredReportAreaSource(filteredSource);
-
-      // Update the Report Area layer with filtered source
-      const layers = map.getLayers();
-      layers.forEach(layer => {
-        if (layer.get('title') === 'Report Area ATCO') {
-          layer.setSource(filteredSource);
-        }
-      });
-
-      // Query all available layers using backend API
+      // Get layer IDs for spatial query
       const layerIds = availableLayers.map(layer => layer.id);
+
+      // If no layers from backend, use the selected layer
+      if (layerIds.length === 0) {
+        layerIds.push(selectedLayer);
+      }
 
       const response = await fetch(`${API_BASE_URL}/spatial-query`, {
         method: 'POST',
@@ -415,89 +413,279 @@ function App() {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          geometry: wkt,
+          geometry: wktGeometry,
           layers: layerIds
-        })
+        }),
       });
 
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-      }
+      if (response.ok) {
+        const data = await response.json();
+        console.log('Spatial query response:', data);
 
-      const data = await response.json();
-      const totalEndTime = performance.now();
-
-      if (data.success) {
-        setLayerResults(data.results);
-
-        // Set active layer results
-        const activeResult = data.results[selectedLayer];
-        if (activeResult && activeResult.success) {
-          setFilteredFeatures(activeResult.features);
-          setCurrentPage(1); // Reset to first page for spatial query results
-          setIsFeatureTableCollapsed(false);
-
-          // Update layer results with pagination info
-          setLayerResults(prev => ({
-            ...prev,
-            [selectedLayer]: {
-              ...activeResult,
-              pagination: {
-                page: 1,
-                pageSize: RECORDS_PER_PAGE,
-                totalFeatures: activeResult.features.length,
-                totalPages: Math.ceil(activeResult.features.length / RECORDS_PER_PAGE),
-                hasMore: activeResult.features.length > RECORDS_PER_PAGE
+        // Also filter the map using WMS
+        try {
+          // Store original source if not already stored
+          if (!originalReportAreaSource) {
+            const layers = map.getLayers();
+            layers.forEach(layer => {
+              if (layer.get('title') === 'Report Area ATCO') {
+                setOriginalReportAreaSource(layer.getSource());
               }
-            }
-          }));
+            });
+          }
 
-          setQueryResult({
-            type: 'success',
-            message: `Found ${activeResult.features.length} features in the selected area`,
-            bbox: bbox
+          // Create filtered WMS source for map visualization
+          const filteredSource = new ImageWMS({
+            url: 'http://20.20.152.180:8181/geoserver/Picarro/wms',
+            params: {
+              'LAYERS': selectedLayer,
+              'TILED': true,
+              'CQL_FILTER': `INTERSECTS(the_geom, ${wktGeometry})`
+            },
+            serverType: 'geoserver'
+          });
+
+          // Update the Report Area layer with filtered source
+          const layers = map.getLayers();
+          layers.forEach(layer => {
+            if (layer.get('title') === 'Report Area ATCO') {
+              layer.setSource(filteredSource);
+            }
+          });
+
+          console.log('Updated map with WMS filter');
+        } catch (error) {
+          console.error('Error updating map filter:', error);
+        }
+
+        // Find the first successful result
+        const activeResult = Object.values(data.results).find(result => result.success);
+
+        if (activeResult && activeResult.features.length > 0) {
+          // Check if we have more than 100 features and need pagination
+          if (activeResult.count > 100) {
+            // Store the spatial query geometry for pagination
+            setCurrentSpatialQueryGeometry(wktGeometry);
+            // Use paginated spatial query for the first page to get correct total count
+            await loadSpatialQueryPaginated(wktGeometry, layerIds, 1);
+          } else {
+            // Clear any stored spatial query geometry for small results
+            setCurrentSpatialQueryGeometry(null);
+            // Update filtered features and table for small result sets
+            setFilteredFeatures(activeResult.features);
+            setCurrentPage(1);
+            setIsFeatureTableCollapsed(false);
+            
+            // Update layer results for pagination
+            const layerId = Object.keys(data.results).find(key => data.results[key].success);
+            if (layerId) {
+              // For spatial query results, use the actual count from the query
+              const totalFeatures = activeResult.count;
+              const totalPages = Math.ceil(totalFeatures / 100);
+              
+              setLayerResults({
+                [layerId]: {
+                  success: true,
+                  features: activeResult.features,
+                  count: activeResult.count,
+                  layerName: activeResult.layerName,
+                  pagination: {
+                    page: 1,
+                    pageSize: 100,
+                    totalFeatures: totalFeatures,
+                    totalPages: totalPages,
+                    hasMore: totalFeatures > 100,
+                    startIndex: 0,
+                    endIndex: Math.min(totalFeatures - 1, 99)
+                  }
+                }
+              });
+              setActiveTab(layerId);
+            }
+          }
+
+          setQueryResult({ 
+            type: 'success', 
+            message: `Found ${activeResult.count} features in ${activeResult.layerName}` 
           });
         } else {
-          setQueryResult({
-            type: 'error',
-            message: activeResult?.error || 'Failed to fetch filtered features'
+          // No features found
+          setFilteredFeatures([]);
+          setCurrentPage(1);
+          setIsFeatureTableCollapsed(false);
+          
+          // Update layer results to show no features
+          const layerId = Object.keys(data.results)[0];
+          if (layerId) {
+            setLayerResults({
+              [layerId]: {
+                success: false,
+                features: [],
+                count: 0,
+                layerName: data.results[layerId].layerName,
+                pagination: {
+                  page: 1,
+                  pageSize: 100,
+                  totalFeatures: 0,
+                  totalPages: 1,
+                  hasMore: false,
+                  startIndex: 0,
+                  endIndex: 0
+                }
+              }
+            });
+            setActiveTab(layerId);
+          }
+
+          setQueryResult({ 
+            type: 'info', 
+            message: 'No features found in the selected area' 
           });
         }
 
-        // Update performance metrics
-        setPerformanceMetrics({
-          totalTime: data.totalTime,
-          layerResults: data.results,
-          queryTime: data.queryTime
-        });
-
-        // Zoom to the drawn area
-        const extent = geometry.getExtent();
-        map.getView().fit(extent, {
-          padding: [20, 20, 20, 20],
-          duration: 1000
-        });
+        // Clear drawing
+        if (drawingSource) {
+          drawingSource.clear();
+        }
+        if (highlightSource) {
+          highlightSource.clear();
+        }
       } else {
-        throw new Error(data.error || 'Spatial query failed');
+        const errorData = await response.json();
+        setQueryResult({ 
+          type: 'error', 
+          message: `Spatial query failed: ${errorData.error || 'Unknown error'}` 
+        });
       }
     } catch (error) {
-      console.error('Spatial query error:', error);
-      setQueryResult({
-        type: 'error',
-        message: error.message || 'Network error'
+      console.error('Error performing spatial query:', error);
+      setQueryResult({ 
+        type: 'error', 
+        message: `Error performing spatial query: ${error.message}` 
       });
     } finally {
       setIsQuerying(false);
     }
   };
 
+  // Load paginated spatial query results
+  const loadSpatialQueryPaginated = async (geometry, layerIds, page = 1) => {
+    setIsLoadingPage(true);
+    try {
+      const response = await fetch(`${API_BASE_URL}/spatial-query-paginated`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          geometry: geometry,
+          layers: layerIds,
+          page: page,
+          pageSize: 100
+        }),
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        console.log('Paginated spatial query response:', data);
+
+        // Find the first successful result
+        const activeResult = Object.values(data.results).find(result => result.success);
+
+        if (activeResult && activeResult.features.length > 0) {
+          setFilteredFeatures(activeResult.features);
+          setCurrentPage(page);
+          setIsFeatureTableCollapsed(false);
+          
+          // Update layer results for pagination
+          const layerId = Object.keys(data.results).find(key => data.results[key].success);
+          if (layerId) {
+            setLayerResults({
+              [layerId]: {
+                success: true,
+                features: activeResult.features,
+                count: activeResult.count,
+                layerName: activeResult.layerName,
+                pagination: {
+                  page: activeResult.currentPage,
+                  pageSize: activeResult.pageSize,
+                  totalFeatures: activeResult.totalFeatures,
+                  totalPages: activeResult.totalPages,
+                  hasMore: activeResult.currentPage < activeResult.totalPages,
+                  startIndex: (activeResult.currentPage - 1) * activeResult.pageSize,
+                  endIndex: Math.min(activeResult.totalFeatures - 1, (activeResult.currentPage * activeResult.pageSize) - 1)
+                }
+              }
+            });
+            setActiveTab(layerId);
+          }
+        }
+      } else {
+        console.error('Failed to load paginated spatial query results');
+      }
+    } catch (error) {
+      console.error('Error loading paginated spatial query results:', error);
+    } finally {
+      setIsLoadingPage(false);
+    }
+  };
+
   // Handle feature selection
   const handleFeatureSelect = (featureId, isSelected) => {
-    if (isSelected) {
-      setSelectedFeatures(prev => [...prev, featureId]);
+    if (Array.isArray(featureId)) {
+      // Handle bulk selection
+      setSelectedFeatures(isSelected ? featureId : []);
+      updateHighlightLayer(isSelected ? featureId : []);
     } else {
-      setSelectedFeatures(prev => prev.filter(id => id !== featureId));
+      // Handle single selection
+      if (isSelected) {
+        setSelectedFeatures(prev => {
+          const newSelection = [...prev, featureId];
+          updateHighlightLayer(newSelection);
+          return newSelection;
+        });
+      } else {
+        setSelectedFeatures(prev => {
+          const newSelection = prev.filter(id => id !== featureId);
+          updateHighlightLayer(newSelection);
+          return newSelection;
+        });
+      }
     }
+  };
+
+  // Update highlight layer with selected features
+  const updateHighlightLayer = (selectedIds) => {
+    if (!highlightSource) {
+      console.log('Highlight source not available');
+      return;
+    }
+    
+    console.log('Updating highlight layer with selected IDs:', selectedIds);
+    console.log('Available filtered features:', filteredFeatures.length);
+    
+    // Clear existing highlights
+    highlightSource.clear();
+    
+    // Add selected features to highlight layer
+    selectedIds.forEach(id => {
+      const feature = filteredFeatures.find(f => f.id === id || f.properties?.id === id);
+      console.log(`Looking for feature with ID ${id}:`, feature ? 'Found' : 'Not found');
+      
+      if (feature && feature.geometry) {
+        try {
+          const olFeature = new GeoJSON().readFeature(feature);
+          highlightSource.addFeature(olFeature);
+          console.log('Added feature to highlight layer:', feature.id || feature.properties?.id);
+        } catch (error) {
+          console.error('Error creating highlight feature:', error);
+        }
+      } else {
+        console.log('Feature not found or no geometry:', id);
+      }
+    });
+    
+    console.log('Highlight source features count:', highlightSource.getFeatures().length);
   };
 
   // Zoom to selected features
@@ -510,29 +698,79 @@ function App() {
     );
 
     if (selectedFeaturesData.length > 0) {
-      const coordinates = selectedFeaturesData.map(feature => {
-        if (feature.geometry && feature.geometry.coordinates) {
-          return feature.geometry.coordinates[0];
+      try {
+        // Collect all coordinates from selected features
+        const allCoordinates = [];
+        
+        selectedFeaturesData.forEach(feature => {
+          if (feature.geometry && feature.geometry.coordinates) {
+            // Handle different geometry types
+            if (feature.geometry.type === 'Point') {
+              allCoordinates.push(feature.geometry.coordinates);
+            } else if (feature.geometry.type === 'LineString') {
+              allCoordinates.push(...feature.geometry.coordinates);
+            } else if (feature.geometry.type === 'Polygon') {
+              // For polygons, use the first ring (exterior)
+              allCoordinates.push(...feature.geometry.coordinates[0]);
+            } else if (feature.geometry.type === 'MultiPolygon') {
+              // For multipolygons, use all rings
+              feature.geometry.coordinates.forEach(polygon => {
+                allCoordinates.push(...polygon[0]);
+              });
+            }
+          }
+        });
+
+        if (allCoordinates.length > 0) {
+          // Find the extent of all coordinates
+          const minX = Math.min(...allCoordinates.map(c => c[0]));
+          const minY = Math.min(...allCoordinates.map(c => c[1]));
+          const maxX = Math.max(...allCoordinates.map(c => c[0]));
+          const maxY = Math.max(...allCoordinates.map(c => c[1]));
+
+          // Create extent in the coordinate system of the features
+          const extent = [minX, minY, maxX, maxY];
+          
+          // Transform extent to map projection if needed
+          const mapProjection = map.getView().getProjection();
+          let transformedExtent;
+          
+          try {
+            // Try to transform from EPSG:4326 to map projection
+            transformedExtent = [
+              transform([minX, minY], 'EPSG:4326', mapProjection),
+              transform([maxX, maxY], 'EPSG:4326', mapProjection)
+            ].flat();
+          } catch (e) {
+            // If transformation fails, assume coordinates are already in map projection
+            console.log('Using coordinates as-is (assuming they are in map projection)');
+            transformedExtent = extent;
+          }
+
+          // Add some padding to the extent
+          const padding = 0.1; // 10% padding
+          const width = transformedExtent[2] - transformedExtent[0];
+          const height = transformedExtent[3] - transformedExtent[1];
+          
+          transformedExtent[0] -= width * padding;
+          transformedExtent[1] -= height * padding;
+          transformedExtent[2] += width * padding;
+          transformedExtent[3] += height * padding;
+
+          map.getView().fit(transformedExtent, {
+            padding: [50, 50, 50, 50],
+            duration: 1000,
+            maxZoom: 18
+          });
         }
-        return [0, 0];
-      }).flat();
-
-      if (coordinates.length > 0) {
-        const minX = Math.min(...coordinates.map(c => c[0]));
-        const minY = Math.min(...coordinates.map(c => c[1]));
-        const maxX = Math.max(...coordinates.map(c => c[0]));
-        const maxY = Math.max(...coordinates.map(c => c[1]));
-
-        const extent = [minX, minY, maxX, maxY];
-
-        const mapProjection = map.getView().getProjection();
-        const transformedExtent = [
-          transform([minX, minY], 'EPSG:4326', mapProjection),
-          transform([maxX, maxY], 'EPSG:4326', mapProjection)
-        ].flat();
-
-        map.getView().fit(transformedExtent, {
-          padding: [50, 50, 50, 50],
+      } catch (error) {
+        console.error('Error zooming to selected features:', error);
+        // Fallback: zoom to a reasonable area
+        const center = map.getView().getCenter();
+        const resolution = map.getView().getResolution();
+        map.getView().animate({
+          center: center,
+          resolution: resolution * 0.5,
           duration: 1000
         });
       }
@@ -612,322 +850,69 @@ function App() {
     }
   };
 
+  // Handle page change
+  const handlePageChange = (newPage) => {
+    setCurrentPage(newPage);
+    
+    // Check if we're in a spatial query context
+    const activeResult = layerResults[activeTab];
+    if (activeResult && activeResult.success && activeResult.pagination && activeResult.pagination.totalFeatures > 100 && currentSpatialQueryGeometry) {
+      // This is a spatial query result with pagination
+      // Use the stored spatial query geometry for pagination
+      const layerIds = availableLayers.map(layer => layer.id);
+      if (layerIds.length === 0) {
+        layerIds.push(selectedLayer);
+      }
+      loadSpatialQueryPaginated(currentSpatialQueryGeometry, layerIds, newPage);
+    } else {
+      // Regular layer pagination
+      loadRecords(activeTab, newPage);
+    }
+  };
+
   return (
     <div className="App">
       <div ref={mapRef} className="map-container" />
 
-      {/* API Connection Status */}
-      <div className="api-status styled-panel">
-        <div className={`status-indicator ${apiConnectionStatus}`}>
-          API: {apiConnectionStatus === 'connected' ? '✅ Connected' :
-            apiConnectionStatus === 'failed' ? '❌ Failed' : '⏳ Checking...'}
-        </div>
-      </div>
-
-      {/* Performance Metrics */}
-      <div className="performance-metrics styled-panel">
-        <h3>Performance Metrics</h3>
-        {performanceMetrics.queryTime && (
-          <div className="metric-item">
-            <strong>Last Query:</strong> {new Date(performanceMetrics.queryTime).toLocaleTimeString()}
-          </div>
-        )}
-        {performanceMetrics.totalTime && (
-          <div className="metric-item">
-            <strong>Total Time:</strong> {performanceMetrics.totalTime.toFixed(2)}ms
-          </div>
-        )}
-        {performanceMetrics.layerResults && Object.keys(performanceMetrics.layerResults).map(layerId => {
-          const result = performanceMetrics.layerResults[layerId];
-          return (
-            <div key={layerId} className="metric-item">
-              <strong>{result.layerName}:</strong> {result.success ?
-                `${result.count} features (${result.loadTime.toFixed(2)}ms)` :
-                `Failed (${result.loadTime.toFixed(2)}ms)`
-              }
-            </div>
-          );
-        })}
-      </div>
-
-      {/* Base Map Gallery - Top Right */}
-      <div className="basemap-gallery styled-panel">
-        <h3>Base Maps</h3>
-        <button
-          className={currentBasemap === 'osm' ? 'active' : ''}
-          onClick={() => changeBasemap('osm')}
-        >
-          OpenStreetMap
-        </button>
-        <button
-          className={currentBasemap === 'satellite' ? 'active' : ''}
-          onClick={() => changeBasemap('satellite')}
-        >
-          Satellite
-        </button>
-        <button
-          className={currentBasemap === 'streets' ? 'active' : ''}
-          onClick={() => changeBasemap('streets')}
-        >
-          Streets
-        </button>
-      </div>
-
-      {/* Layers Panel - Top Right */}
-      <div className="layers-panel styled-panel">
-        <h3>Layers</h3>
-        <label>
-          <input
-            type="checkbox"
-            checked={reportAreaVisible}
-            onChange={toggleReportArea}
-          />
-          Report Area ATCO
-        </label>
-      </div>
-
-      {/* Spatial Query Panel - Bottom Left */}
-      <div className={`spatial-query-panel styled-panel ${!isFeatureTableCollapsed ? 'with-table' : ''}`}>
-        <div className="panel-header">
-          <h3>Spatial Query</h3>
-          <button
-            className="collapse-btn"
-            onClick={() => setIsFeatureTableCollapsed(!isFeatureTableCollapsed)}
-          >
-            {isFeatureTableCollapsed ? '▼' : '▲'}
-          </button>
-        </div>
-
-        <div className="query-controls">
-          <div className="layer-selector">
-            <label>Layer:</label>
-            <select
-              value={selectedLayer}
-              onChange={(e) => setSelectedLayer(e.target.value)}
-            >
-              {availableLayers.map(layer => (
-                <option key={layer.id} value={layer.id}>
-                  {layer.name}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div className="drawing-buttons">
-            <button
-              onClick={startDrawing}
-              disabled={isDrawing}
-              className="primary-btn"
-            >
-              {isDrawing ? 'Drawing...' : 'Draw Box'}
-            </button>
-            <button
-              onClick={stopDrawing}
-              disabled={!isDrawing}
-              className="secondary-btn"
-            >
-              Stop Drawing
-            </button>
-            <button
-              onClick={clearDrawing}
-              className="clear-btn"
-            >
-              Clear
-            </button>
-          </div>
-
-          {isDrawing && (
-            <div className="drawing-status">
-              <span>🎯 Drawing Mode Active - Click and drag to draw a box</span>
-            </div>
-          )}
-
-          {isQuerying && (
-            <div className="query-status">
-              <span>Querying...</span>
-            </div>
-          )}
-
-          {queryResult && (
-            <div className="query-result">
-              <div className={`result-message ${queryResult.type}`}>
-                {queryResult.message}
-              </div>
-            </div>
-          )}
-        </div>
-      </div>
+      {/* Left Panel with Widgets */}
+      <LeftPanel
+        currentBasemap={currentBasemap}
+        onBasemapChange={changeBasemap}
+        reportAreaVisible={reportAreaVisible}
+        onReportAreaToggle={toggleReportArea}
+        map={map}
+        availableLayers={availableLayers}
+        selectedLayer={selectedLayer}
+        onLayerChange={setSelectedLayer}
+        isDrawing={isDrawing}
+        onStartDrawing={startDrawing}
+        onStopDrawing={stopDrawing}
+        onClearDrawing={clearDrawing}
+        isQuerying={isQuerying}
+        queryResult={queryResult}
+        isFeatureTableCollapsed={isFeatureTableCollapsed}
+        onToggleTable={() => setIsFeatureTableCollapsed(!isFeatureTableCollapsed)}
+      />
 
       {/* Feature Table */}
-      <div className={`feature-table-container ${isFeatureTableCollapsed ? 'collapsed' : ''}`}>
-        <div className="feature-table-header">
-          <div className="table-tabs">
-            {Object.keys(layerResults).length > 0 ? (
-              Object.keys(layerResults).map(layerId => {
-                const result = layerResults[layerId];
-                const layer = availableLayers.find(l => l.id === layerId);
-                return (
-                  <button
-                    key={layerId}
-                    className={`tab-button ${activeTab === layerId ? 'active' : ''}`}
-                    onClick={() => handleTabChange(layerId)}
-                    disabled={!result.success}
-                  >
-                    {layer?.name || layerId} ({result.count || 0} features)
-                  </button>
-                );
-              })
-            ) : (
-              <div style={{ color: '#666', fontSize: '12px' }}>
-                No query results yet
-              </div>
-            )}
-          </div>
-          <div className="table-controls">
-            {selectedFeatures.length > 0 && (
-              <button
-                className="zoom-btn"
-                onClick={zoomToSelectedFeatures}
-                title="Zoom to selected features"
-              >
-                🔍 Zoom to Selected ({selectedFeatures.length})
-              </button>
-            )}
-            <button
-              className="collapse-btn"
-              onClick={() => setIsFeatureTableCollapsed(!isFeatureTableCollapsed)}
-            >
-              {isFeatureTableCollapsed ? '▼' : '▲'}
-            </button>
-          </div>
-        </div>
-
-        {/* Table Expand Arrow - Bottom Center */}
-        <button
-          className={`table-expand-arrow ${isFeatureTableCollapsed ? 'collapsed' : ''}`}
-          onClick={() => setIsFeatureTableCollapsed(!isFeatureTableCollapsed)}
-          title={isFeatureTableCollapsed ? 'Expand table' : 'Collapse table'}
-        >
-        </button>
-
-        {!isFeatureTableCollapsed && filteredFeatures.length > 0 && (
-          <>
-            <div className="feature-table-content">
-              <table>
-                <thead>
-                  <tr>
-                    <th>
-                      <input
-                        type="checkbox"
-                        checked={selectedFeatures.length === getCurrentPageFeatures().length && getCurrentPageFeatures().length > 0}
-                        onChange={(e) => {
-                          if (e.target.checked) {
-                            setSelectedFeatures(getCurrentPageFeatures().map(f => f.id || f.properties?.id));
-                          } else {
-                            setSelectedFeatures([]);
-                          }
-                        }}
-                      />
-                    </th>
-                    <th>Feature ID</th>
-                    {filteredFeatures.length > 0 && Object.keys(filteredFeatures[0].properties || {}).map(key => (
-                      <th key={key}>{key}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {getCurrentPageFeatures().map((feature, index) => (
-                    <tr key={index}>
-                      <td>
-                        <input
-                          type="checkbox"
-                          checked={selectedFeatures.includes(feature.id || feature.properties?.id)}
-                          onChange={(e) => handleFeatureSelect(feature.id || feature.properties?.id, e.target.checked)}
-                        />
-                      </td>
-                      <td>{feature.id || `Feature ${index + 1}`}</td>
-                      {Object.entries(feature.properties || {}).map(([key, value]) => (
-                        <td key={key} title={String(value)}>
-                          <div className="cell-content">{String(value)}</div>
-                        </td>
-                      ))}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-
-            {/* Pagination */}
-            {getTotalPages() >= 1 && (
-              <div className="pagination">
-                {/* Previous Button */}
-                <button
-                  onClick={() => {
-                    const newPage = Math.max(1, currentPage - 1);
-                    setCurrentPage(newPage);
-                    loadRecords(activeTab, newPage);
-                  }}
-                  disabled={currentPage === 1 || isLoadingPage || getTotalPages() <= 1}
-                  className="pagination-btn"
-                >
-                  {isLoadingPage ? '⏳' : '◀'}
-                </button>
-
-                {/* Page Numbers */}
-                <div className="page-numbers">
-                  {getPageNumbers().map((pageNum, index) => (
-                    <button
-                      key={index}
-                      onClick={() => {
-                        if (typeof pageNum === 'number') {
-                          setCurrentPage(pageNum);
-                          loadRecords(activeTab, pageNum);
-                        }
-                      }}
-                      disabled={isLoadingPage || pageNum === '...'}
-                      className={`page-number ${pageNum === currentPage ? 'active' : ''} ${pageNum === '...' ? 'ellipsis' : ''}`}
-                    >
-                      {pageNum}
-                    </button>
-                  ))}
-                </div>
-
-                {/* Next Button */}
-                <button
-                  onClick={() => {
-                    const newPage = currentPage + 1;
-                    setCurrentPage(newPage);
-                    loadRecords(activeTab, newPage);
-                  }}
-                  disabled={currentPage >= getTotalPages() || isLoadingPage || getTotalPages() <= 1}
-                  className="pagination-btn"
-                >
-                  {isLoadingPage ? '⏳' : '▶'}
-                </button>
-
-                {/* Info Display */}
-                <div className="pagination-info">
-                  <span>
-                    {getTotalPages() > 1 ? `Page ${currentPage} of ${getTotalPages()}` : 'All Features'}
-                  </span>
-                  <span style={{ marginLeft: '8px', color: '#666', fontSize: '11px' }}>
-                    ({filteredFeatures.length} of {getTotalFeatures()} features)
-                  </span>
-                  {isLoadingPage && <span style={{ marginLeft: '8px', color: '#007bff' }}>⏳ Loading...</span>}
-                </div>
-              </div>
-            )}
-          </>
-        )}
-
-        {!isFeatureTableCollapsed && filteredFeatures.length === 0 && (
-          <div className="feature-table-content">
-            <div style={{ padding: '20px', textAlign: 'center', color: '#666' }}>
-              No features found. Draw a box to query features.
-            </div>
-          </div>
-        )}
-      </div>
+      <FeatureTable
+        isFeatureTableCollapsed={isFeatureTableCollapsed}
+        onToggleTable={() => setIsFeatureTableCollapsed(!isFeatureTableCollapsed)}
+        filteredFeatures={filteredFeatures}
+        layerResults={layerResults}
+        activeTab={activeTab}
+        onTabChange={handleTabChange}
+        availableLayers={availableLayers}
+        selectedFeatures={selectedFeatures}
+        onFeatureSelect={handleFeatureSelect}
+        onZoomToSelected={zoomToSelectedFeatures}
+        currentPage={currentPage}
+        onPageChange={handlePageChange}
+        isLoadingPage={isLoadingPage}
+        getTotalPages={getTotalPages}
+        getPageNumbers={getPageNumbers}
+        getTotalFeatures={getTotalFeatures}
+      />
     </div>
   );
 }
