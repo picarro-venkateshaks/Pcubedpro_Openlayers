@@ -36,8 +36,9 @@ function App() {
   const [layerResults, setLayerResults] = useState({});
   const [availableLayers, setAvailableLayers] = useState([]);
   const [apiConnectionStatus, setApiConnectionStatus] = useState('checking');
+  const [isLoadingPage, setIsLoadingPage] = useState(false);
 
-  const RECORDS_PER_PAGE = 10;
+  const RECORDS_PER_PAGE = 100; // Server-side pagination
 
   // API Base URL
   const API_BASE_URL = 'http://localhost:5000/api';
@@ -66,7 +67,12 @@ function App() {
           'LAYERS': 'Picarro:Boundary',
           'TILED': true
         },
-        serverType: 'geoserver'
+        serverType: 'geoserver',
+        // Add debugging to see WMS requests
+        tileLoadFunction: function (imageTile, src) {
+          console.log('WMS Tile Request:', src);
+          imageTile.getImage().src = src;
+        }
       }),
       title: 'Report Area ATCO',
       visible: true
@@ -188,37 +194,58 @@ function App() {
     loadLayers();
   }, []);
 
-  // Function to load all records for a layer
-  const loadAllRecords = async (layerId) => {
+  // Function to load records for a layer with pagination
+  const loadRecords = async (layerId, page = 1) => {
+    setIsLoadingPage(true);
     try {
-      const response = await fetch(`${API_BASE_URL}/features?layer=${layerId}`);
+      // Get total count on first page load or if we don't have pagination info
+      const currentLayerResult = layerResults[layerId];
+      const hasPaginationInfo = currentLayerResult && currentLayerResult.pagination && currentLayerResult.pagination.totalFeatures;
+      const getTotalCount = page === 1 || !hasPaginationInfo;
+      
+      const response = await fetch(`${API_BASE_URL}/features?layer=${layerId}&page=${page}&pageSize=${RECORDS_PER_PAGE}&getTotalCount=${getTotalCount}`);
       if (response.ok) {
         const data = await response.json();
         if (data.features) {
+          console.log('loadRecords - received data:', data);
           setFilteredFeatures(data.features);
+          
+          // Preserve existing pagination info if not provided in response
+          const existingPagination = currentLayerResult?.pagination;
+          const paginationInfo = data.pagination || existingPagination;
+          
           setLayerResults({
             [layerId]: {
               success: true,
               features: data.features,
               count: data.features.length,
-              layerName: availableLayers.find(l => l.id === layerId)?.name || layerId
+              layerName: availableLayers.find(l => l.id === layerId)?.name || layerId,
+              pagination: paginationInfo
             }
           });
+          setCurrentPage(page);
           setIsFeatureTableCollapsed(false);
         }
       } else {
-        console.error('Failed to load all records for layer:', layerId);
+        console.error('Failed to load records for layer:', layerId);
       }
     } catch (error) {
-      console.error('Error loading all records:', error);
+      console.error('Error loading records:', error);
+    } finally {
+      setIsLoadingPage(false);
     }
+  };
+
+  // Function to load all records for a layer (first page)
+  const loadAllRecords = async (layerId) => {
+    await loadRecords(layerId, 1);
   };
 
   // Test API connection
   useEffect(() => {
     const testConnection = async () => {
       try {
-        const response = await fetch(`${API_BASE_URL.replace('/api', '')}/test-connection`);
+        const response = await fetch(`${API_BASE_URL.replace('/api', '')}/`);
         if (response.ok) {
           setApiConnectionStatus('connected');
         } else {
@@ -239,9 +266,9 @@ function App() {
 
     const layers = map.getLayers();
     layers.forEach(layer => {
-      if (layer.get('title') === 'OpenStreetMap' || 
-          layer.get('title') === 'Satellite' || 
-          layer.get('title') === 'Streets') {
+      if (layer.get('title') === 'OpenStreetMap' ||
+        layer.get('title') === 'Satellite' ||
+        layer.get('title') === 'Streets') {
         layer.setVisible(layer.get('title').toLowerCase().includes(basemapType));
       }
     });
@@ -251,7 +278,7 @@ function App() {
   // Toggle Report Area layer
   const toggleReportArea = (e) => {
     if (!map) return;
-    
+
     const layers = map.getLayers();
     layers.forEach(layer => {
       if (layer.get('title') === 'Report Area ATCO') {
@@ -275,10 +302,10 @@ function App() {
     drawInteraction.on('drawend', (event) => {
       const geometry = event.feature.getGeometry();
       const extent = geometry.getExtent();
-      
+
       const bbox = extent.join(',');
       performSpatialQuery(bbox, geometry);
-      
+
       map.removeInteraction(drawInteraction);
       setIsDrawing(false);
       setDrawingInteraction(null);
@@ -309,7 +336,7 @@ function App() {
     setSelectedFeatures([]);
     setCurrentPage(1);
     setLayerResults({});
-    
+
     if (map && originalReportAreaSource) {
       const layers = map.getLayers();
       layers.forEach(layer => {
@@ -361,7 +388,12 @@ function App() {
           'TILED': true,
           'CQL_FILTER': `INTERSECTS(the_geom, ${wkt})`
         },
-        serverType: 'geoserver'
+        serverType: 'geoserver',
+        // Add debugging to see filtered WMS requests
+        tileLoadFunction: function (imageTile, src) {
+          console.log('Filtered WMS Tile Request:', src);
+          imageTile.getImage().src = src;
+        }
       });
 
       setFilteredReportAreaSource(filteredSource);
@@ -376,7 +408,7 @@ function App() {
 
       // Query all available layers using backend API
       const layerIds = availableLayers.map(layer => layer.id);
-      
+
       const response = await fetch(`${API_BASE_URL}/spatial-query`, {
         method: 'POST',
         headers: {
@@ -394,16 +426,32 @@ function App() {
 
       const data = await response.json();
       const totalEndTime = performance.now();
-      
+
       if (data.success) {
         setLayerResults(data.results);
-        
+
         // Set active layer results
         const activeResult = data.results[selectedLayer];
         if (activeResult && activeResult.success) {
           setFilteredFeatures(activeResult.features);
+          setCurrentPage(1); // Reset to first page for spatial query results
           setIsFeatureTableCollapsed(false);
-          
+
+          // Update layer results with pagination info
+          setLayerResults(prev => ({
+            ...prev,
+            [selectedLayer]: {
+              ...activeResult,
+              pagination: {
+                page: 1,
+                pageSize: RECORDS_PER_PAGE,
+                totalFeatures: activeResult.features.length,
+                totalPages: Math.ceil(activeResult.features.length / RECORDS_PER_PAGE),
+                hasMore: activeResult.features.length > RECORDS_PER_PAGE
+              }
+            }
+          }));
+
           setQueryResult({
             type: 'success',
             message: `Found ${activeResult.features.length} features in the selected area`,
@@ -457,7 +505,7 @@ function App() {
     e.stopPropagation();
     if (selectedFeatures.length === 0) return;
 
-    const selectedFeaturesData = filteredFeatures.filter(feature => 
+    const selectedFeaturesData = filteredFeatures.filter(feature =>
       selectedFeatures.includes(feature.id || feature.properties?.id)
     );
 
@@ -476,13 +524,13 @@ function App() {
         const maxY = Math.max(...coordinates.map(c => c[1]));
 
         const extent = [minX, minY, maxX, maxY];
-        
+
         const mapProjection = map.getView().getProjection();
         const transformedExtent = [
           transform([minX, minY], 'EPSG:4326', mapProjection),
           transform([maxX, maxY], 'EPSG:4326', mapProjection)
         ].flat();
-        
+
         map.getView().fit(transformedExtent, {
           padding: [50, 50, 50, 50],
           duration: 1000
@@ -491,15 +539,67 @@ function App() {
     }
   };
 
-  // Get paginated features
-  const getPaginatedFeatures = () => {
-    const startIndex = (currentPage - 1) * RECORDS_PER_PAGE;
-    const endIndex = startIndex + RECORDS_PER_PAGE;
-    return filteredFeatures.slice(startIndex, endIndex);
+  // Get current page features (already paginated from server)
+  const getCurrentPageFeatures = () => {
+    return filteredFeatures;
   };
 
-  // Calculate total pages
-  const totalPages = Math.ceil(filteredFeatures.length / RECORDS_PER_PAGE);
+  // Calculate total pages from layer results
+  const getTotalPages = () => {
+    const activeResult = layerResults[activeTab];
+    console.log('getTotalPages - activeResult:', activeResult);
+    if (activeResult && activeResult.pagination) {
+      const totalPages = activeResult.pagination.totalPages || 1;
+      console.log('getTotalPages - totalPages:', totalPages);
+      return totalPages;
+    }
+    console.log('getTotalPages - no pagination data, returning 1');
+    return 1;
+  };
+
+  // Get total features count
+  const getTotalFeatures = () => {
+    const activeResult = layerResults[activeTab];
+    if (activeResult && activeResult.pagination) {
+      return activeResult.pagination.totalFeatures || 0;
+    }
+    return 0;
+  };
+
+  // Generate page numbers for pagination
+  const getPageNumbers = () => {
+    const totalPages = getTotalPages();
+    const current = currentPage;
+    const pages = [];
+
+    // Always show first page
+    pages.push(1);
+
+    // Show pages around current page
+    const start = Math.max(2, current - 2);
+    const end = Math.min(totalPages - 1, current + 2);
+
+    if (start > 2) {
+      pages.push('...');
+    }
+
+    for (let i = start; i <= end; i++) {
+      if (i > 1 && i < totalPages) {
+        pages.push(i);
+      }
+    }
+
+    if (end < totalPages - 1) {
+      pages.push('...');
+    }
+
+    // Always show last page if more than 1 page
+    if (totalPages > 1) {
+      pages.push(totalPages);
+    }
+
+    return pages;
+  };
 
   // Handle tab change
   const handleTabChange = (layerId) => {
@@ -507,7 +607,7 @@ function App() {
     const layerResult = layerResults[layerId];
     if (layerResult && layerResult.success) {
       setFilteredFeatures(layerResult.features);
-      setCurrentPage(1);
+      setCurrentPage(layerResult.pagination?.page || 1);
       setSelectedFeatures([]);
     }
   };
@@ -519,8 +619,8 @@ function App() {
       {/* API Connection Status */}
       <div className="api-status styled-panel">
         <div className={`status-indicator ${apiConnectionStatus}`}>
-          API: {apiConnectionStatus === 'connected' ? '✅ Connected' : 
-                 apiConnectionStatus === 'failed' ? '❌ Failed' : '⏳ Checking...'}
+          API: {apiConnectionStatus === 'connected' ? '✅ Connected' :
+            apiConnectionStatus === 'failed' ? '❌ Failed' : '⏳ Checking...'}
         </div>
       </div>
 
@@ -541,8 +641,8 @@ function App() {
           const result = performanceMetrics.layerResults[layerId];
           return (
             <div key={layerId} className="metric-item">
-              <strong>{result.layerName}:</strong> {result.success ? 
-                `${result.count} features (${result.loadTime.toFixed(2)}ms)` : 
+              <strong>{result.layerName}:</strong> {result.success ?
+                `${result.count} features (${result.loadTime.toFixed(2)}ms)` :
                 `Failed (${result.loadTime.toFixed(2)}ms)`
               }
             </div>
@@ -673,7 +773,7 @@ function App() {
                     onClick={() => handleTabChange(layerId)}
                     disabled={!result.success}
                   >
-                    {layer?.name || layerId} ({result.count || 0})
+                    {layer?.name || layerId} ({result.count || 0} features)
                   </button>
                 );
               })
@@ -685,7 +785,7 @@ function App() {
           </div>
           <div className="table-controls">
             {selectedFeatures.length > 0 && (
-              <button 
+              <button
                 className="zoom-btn"
                 onClick={zoomToSelectedFeatures}
                 title="Zoom to selected features"
@@ -701,7 +801,7 @@ function App() {
             </button>
           </div>
         </div>
-        
+
         {/* Table Expand Arrow - Bottom Center */}
         <button
           className={`table-expand-arrow ${isFeatureTableCollapsed ? 'collapsed' : ''}`}
@@ -709,7 +809,7 @@ function App() {
           title={isFeatureTableCollapsed ? 'Expand table' : 'Collapse table'}
         >
         </button>
-        
+
         {!isFeatureTableCollapsed && filteredFeatures.length > 0 && (
           <>
             <div className="feature-table-content">
@@ -719,10 +819,10 @@ function App() {
                     <th>
                       <input
                         type="checkbox"
-                        checked={selectedFeatures.length === getPaginatedFeatures().length && getPaginatedFeatures().length > 0}
+                        checked={selectedFeatures.length === getCurrentPageFeatures().length && getCurrentPageFeatures().length > 0}
                         onChange={(e) => {
                           if (e.target.checked) {
-                            setSelectedFeatures(getPaginatedFeatures().map(f => f.id || f.properties?.id));
+                            setSelectedFeatures(getCurrentPageFeatures().map(f => f.id || f.properties?.id));
                           } else {
                             setSelectedFeatures([]);
                           }
@@ -736,7 +836,7 @@ function App() {
                   </tr>
                 </thead>
                 <tbody>
-                  {getPaginatedFeatures().map((feature, index) => (
+                  {getCurrentPageFeatures().map((feature, index) => (
                     <tr key={index}>
                       <td>
                         <input
@@ -756,30 +856,70 @@ function App() {
                 </tbody>
               </table>
             </div>
-            
+
             {/* Pagination */}
-            {totalPages > 1 && (
+            {getTotalPages() >= 1 && (
               <div className="pagination">
+                {/* Previous Button */}
                 <button
-                  onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
-                  disabled={currentPage === 1}
+                  onClick={() => {
+                    const newPage = Math.max(1, currentPage - 1);
+                    setCurrentPage(newPage);
+                    loadRecords(activeTab, newPage);
+                  }}
+                  disabled={currentPage === 1 || isLoadingPage || getTotalPages() <= 1}
+                  className="pagination-btn"
                 >
-                  Previous
+                  {isLoadingPage ? '⏳' : '◀'}
                 </button>
-                <span>
-                  Page {currentPage} of {totalPages}
-                </span>
+
+                {/* Page Numbers */}
+                <div className="page-numbers">
+                  {getPageNumbers().map((pageNum, index) => (
+                    <button
+                      key={index}
+                      onClick={() => {
+                        if (typeof pageNum === 'number') {
+                          setCurrentPage(pageNum);
+                          loadRecords(activeTab, pageNum);
+                        }
+                      }}
+                      disabled={isLoadingPage || pageNum === '...'}
+                      className={`page-number ${pageNum === currentPage ? 'active' : ''} ${pageNum === '...' ? 'ellipsis' : ''}`}
+                    >
+                      {pageNum}
+                    </button>
+                  ))}
+                </div>
+
+                {/* Next Button */}
                 <button
-                  onClick={() => setCurrentPage(prev => Math.min(totalPages, prev + 1))}
-                  disabled={currentPage === totalPages}
+                  onClick={() => {
+                    const newPage = currentPage + 1;
+                    setCurrentPage(newPage);
+                    loadRecords(activeTab, newPage);
+                  }}
+                  disabled={currentPage >= getTotalPages() || isLoadingPage || getTotalPages() <= 1}
+                  className="pagination-btn"
                 >
-                  Next
+                  {isLoadingPage ? '⏳' : '▶'}
                 </button>
+
+                {/* Info Display */}
+                <div className="pagination-info">
+                  <span>
+                    {getTotalPages() > 1 ? `Page ${currentPage} of ${getTotalPages()}` : 'All Features'}
+                  </span>
+                  <span style={{ marginLeft: '8px', color: '#666', fontSize: '11px' }}>
+                    ({filteredFeatures.length} of {getTotalFeatures()} features)
+                  </span>
+                  {isLoadingPage && <span style={{ marginLeft: '8px', color: '#007bff' }}>⏳ Loading...</span>}
+                </div>
               </div>
             )}
           </>
         )}
-        
+
         {!isFeatureTableCollapsed && filteredFeatures.length === 0 && (
           <div className="feature-table-content">
             <div style={{ padding: '20px', textAlign: 'center', color: '#666' }}>
